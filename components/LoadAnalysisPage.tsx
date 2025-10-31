@@ -374,6 +374,13 @@ export const LoadAnalysisPage: React.FC<LoadAnalysisPageProps> = ({ scheduleData
           <MonthlyAverageStackedChart data={viewedData} height={384} />
         </div>
       )}
+
+      {/* 本页说明（固定显示在页面底部） */}
+      <div className="p-4 bg-slate-50 rounded-lg border border-slate-300 text-sm text-slate-600">
+        本页说明：展示两类负荷可视化——“小时负荷曲线”与“月度日平均负荷堆叠图 (0–24 点)”。
+        曲线图支持断轴、滚轮缩放、拖拽平移与重置缩放；堆叠图适合对比不同月份在各小时的平均用电水平，帮助识别尖峰、低谷与周期性特征。
+        如上传数据量较大，首次渲染可能稍慢，属正常现象。
+      </div>
     </div>
   );
 };

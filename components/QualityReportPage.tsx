@@ -15,23 +15,19 @@ export const QualityReportPage: React.FC<QualityReportPageProps> = ({ externalQu
   const hasData = !!externalQualityReport;
   return (
     <div className="space-y-6">
-      <div className="p-6 bg-white rounded-xl shadow-lg">
-        <h2 className="text-2xl font-bold text-slate-800">数据完整性分析</h2>
-        <p className="text-sm text-slate-600 mt-1">该页面展示上传负荷数据的完整性与异常统计情况。</p>
-      </div>
-
-      {!hasData && (
-        <div className="p-4 bg-slate-50 rounded-lg border border-dashed border-slate-300 text-sm text-slate-600">
-          暂无数据。请先在页面顶部“负荷文件”处上传文件后再查看本页。
-        </div>
-      )}
+      {/* 顶部说明与空态提示已按需求移除，仅在有数据时展示报告 */}
 
       {hasData && externalQualityReport && (
         <QualityReportPanel report={externalQualityReport} meta={externalMetaInfo ?? null} />
       )}
+
+      {/* 本页说明（固定显示在页面底部） */}
+      <div className="p-4 bg-slate-50 rounded-lg border border-slate-300 text-sm text-slate-600">
+        本页说明：展示数据完整性与异常统计，包括基础信息（时间范围、记录数、采样间隔）、按月缺失统计、缺失日期列表，以及异常值统计（空值/零值/负值）。
+        若页面无数据，请先在顶部“负荷文件”处上传；数据量较大时，报告生成可能需要数秒，属正常现象。
+      </div>
     </div>
   );
 };
 
 export default QualityReportPage;
-

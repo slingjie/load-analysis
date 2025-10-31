@@ -107,6 +107,12 @@ export const EnergyMatrixPage: React.FC<EnergyMatrixPageProps> = ({ scheduleData
       {viewed.length > 0 && (
         <EnergyMatrixTable data={viewed} scheduleData={scheduleData} height={720} />
       )}
+
+      {/* 本页说明（固定显示在页面底部） */}
+      <div className="p-4 bg-slate-50 rounded-lg border border-slate-300 text-sm text-slate-600">
+        本页说明：将小时级用电量转换为“日×时”矩阵，并叠加 TOU 分时与运行逻辑标签，便于定位异常日/异常时段与班次规律。
+        可按年份与月份筛选；全年模式下单元格数量较多（约 365×24），渲染可能偏慢，建议优先按月查看。
+      </div>
     </div>
   );
 };
