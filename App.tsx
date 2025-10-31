@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import type { Schedule, TierId, DateRule, OperatingLogicId, Configuration, CellData, BackendAnalysisMeta, BackendQualityReport } from './types';
+import type { Schedule, TierId, DateRule, OperatingLogicId, Configuration, CellData, BackendAnalysisMeta, BackendQualityReport, MonthlyTouPrices } from './types';
 import { INITIAL_APP_STATE, VALID_OP_LOGIC_IDS, VALID_TIER_IDS } from './constants';
 import * as api from './api';
 import { exportScheduleToExcel } from './utils';
@@ -20,6 +20,7 @@ import { ScheduleCopier } from './components/ScheduleCopier';
 import { LoadAnalysisPage } from './components/LoadAnalysisPage';
 import { EnergyMatrixPage } from './components/EnergyMatrixPage';
 import { QualityReportPage } from './components/QualityReportPage';
+import { PriceEditorPage } from './components/PriceEditorPage';
 
 // 全局未捕获异常与未处理Promise拒绝的兜底日志，辅助定位白屏
 if (typeof window !== 'undefined') {
@@ -56,7 +57,7 @@ const EditModeSelector: React.FC<{
 
 const App: React.FC = () => {
   // --- Page State ---
-  const [currentPage, setCurrentPage] = useState<'editor' | 'analysis' | 'matrix' | 'quality'>('editor');
+  const [currentPage, setCurrentPage] = useState<'editor' | 'price' | 'analysis' | 'matrix' | 'quality'>('editor');
   
   // --- Configuration State ---
   const [configurations, setConfigurations] = useState<{id: string, name: string}[]>([]);
@@ -458,8 +459,62 @@ const App: React.FC = () => {
                         }
                     }
                     
+                    // --- 3. (Optional) Process TOU Prices ---
+                    let newPrices: MonthlyTouPrices | null = null;
+                    try {
+                      if (workbook.SheetNames.includes('TOU Prices')) {
+                        const priceSheet = workbook.Sheets['TOU Prices'];
+                        const priceData: any[][] = XLSX.utils.sheet_to_json(priceSheet, { header: 1, defval: null });
+                        if (priceData.length >= 13) {
+                          // 解析表头，支持两种顺序：
+                          // 1) 旧：['Month','深','谷','平','峰','尖']
+                          // 2) 新：['Month','尖','峰','平','谷','深']
+                          const header: any[] = (priceData[0] || []).map((h) => (h ?? '').toString().trim());
+                          const findIdx = (key: string) => {
+                            const idx = header.findIndex((h) => h === key);
+                            return idx >= 0 ? idx : -1;
+                          };
+                          const idxMap: Record<'深'|'谷'|'平'|'峰'|'尖', number> = {
+                            '深': findIdx('深'),
+                            '谷': findIdx('谷'),
+                            '平': findIdx('平'),
+                            '峰': findIdx('峰'),
+                            '尖': findIdx('尖'),
+                          };
+                          // 回退：若未识别到表头，则按旧版固定列位 1..5
+                          const fallback = (v: number, fb: number) => (v >= 0 ? v : fb);
+                          const out: any[] = [];
+                          for (let i = 1; i <= 12; i++) {
+                            const row = priceData[i] || [];
+                            const pm = {
+                              '深': row[fallback(idxMap['深'], 1)] === '' || row[fallback(idxMap['深'], 1)] == null ? null : Number(row[fallback(idxMap['深'], 1)]),
+                              '谷': row[fallback(idxMap['谷'], 2)] === '' || row[fallback(idxMap['谷'], 2)] == null ? null : Number(row[fallback(idxMap['谷'], 2)]),
+                              '平': row[fallback(idxMap['平'], 3)] === '' || row[fallback(idxMap['平'], 3)] == null ? null : Number(row[fallback(idxMap['平'], 3)]),
+                              '峰': row[fallback(idxMap['峰'], 4)] === '' || row[fallback(idxMap['峰'], 4)] == null ? null : Number(row[fallback(idxMap['峰'], 4)]),
+                              '尖': row[fallback(idxMap['尖'], 5)] === '' || row[fallback(idxMap['尖'], 5)] == null ? null : Number(row[fallback(idxMap['尖'], 5)]),
+                            } as any;
+                            out.push(pm);
+                          }
+                          newPrices = out as MonthlyTouPrices;
+                        }
+                      }
+                    } catch (e) {
+                      console.warn('解析 TOU Prices 表失败，使用默认电价。', e);
+                    }
+
+                    // 基于新导入的月度 TOU 表，清空目标月未使用档位的电价
+                    if (newPrices) {
+                      const TIERS: TierId[] = ['深','谷','平','峰','尖'];
+                      for (let i = 0; i < 12; i++) {
+                        const used = new Set<TierId>(newMonthlySchedule[i].map(c => c.tou as TierId));
+                        TIERS.forEach(t => {
+                          if (!used.has(t)) (newPrices as any)[i][t] = null;
+                        });
+                      }
+                    }
+
                     // After successful parsing, update the state
-                    setAppState({ monthlySchedule: newMonthlySchedule, dateRules: newDateRules });
+                    setAppState({ monthlySchedule: newMonthlySchedule, dateRules: newDateRules, prices: newPrices ?? INITIAL_APP_STATE.prices });
                     setCurrentConfigId(null);
                     setCurrentConfigName(file.name.replace(/\.xlsx$/i, '') || "Imported Schedule");
                     cleanStateRef.current = '';
@@ -549,6 +604,13 @@ const App: React.FC = () => {
             aria-current={currentPage === 'editor' ? 'page' : undefined}
           >
             Schedule Editor
+          </button>
+          <button 
+            onClick={() => setCurrentPage('price')} 
+            className={`${navButtonBaseClasses} ${currentPage === 'price' ? navButtonActiveClasses : navButtonInactiveClasses}`}
+            aria-current={currentPage === 'price' ? 'page' : undefined}
+          >
+            TOU Prices
           </button>
           <button 
             onClick={() => setCurrentPage('analysis')} 
@@ -694,6 +756,15 @@ const App: React.FC = () => {
 
           <JsonOutput data={appState} />
         </>
+      )}
+
+      {currentPage === 'price' && (
+        <PriceEditorPage
+          scheduleData={appState}
+          onChange={(newPrices) => {
+            setAppState(prev => ({ ...prev, prices: newPrices }));
+          }}
+        />
       )}
 
       {currentPage === 'analysis' && (
