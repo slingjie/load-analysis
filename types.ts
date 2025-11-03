@@ -42,6 +42,8 @@ export interface Configuration {
   scheduleData: {
     monthlySchedule: Schedule;
     dateRules: DateRule[];
+    // 每月 TOU 电价，按 0-11 月索引；每项为一个 TOU→价格(元/kWh) 映射
+    prices: MonthlyTouPrices;
   };
 }
 
@@ -98,3 +100,10 @@ export interface BackendLoadAnalysisResponse {
   report: BackendQualityReport;
   meta: BackendAnalysisMeta;
 }
+
+// ---------------- 电价类型 ----------------
+// 每个 TOU 档对应一个价格（单位：元/kWh）；支持为空（null）表示未设置
+export type PriceMap = Record<TierId, number | null>;
+
+// 12 个月的电价配置数组（索引 0-11 对应 1-12 月）
+export type MonthlyTouPrices = PriceMap[];

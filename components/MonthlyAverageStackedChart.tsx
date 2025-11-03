@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { LoadDataPoint } from '../utils';
+import { useMonthlyHourlyAverages } from '../hooks/useMonthlyHourlyAverages';
 
 // 动态按需加载 ECharts（通过 CDN），避免安装额外依赖
 const loadECharts = (): Promise<any> => {
@@ -21,41 +22,7 @@ type Props = {
   height?: number | string;
 };
 
-// 工具函数：将小时级数据聚合为 12 个月 × 24 小时的“日平均小时负荷”
-// 计算口径：对每个“月份-小时”，对所有自然日求平均（只统计该月内出现该小时数据的日期数）
-const useMonthlyHourlyAverages = (data: LoadDataPoint[]) => {
-  return useMemo(() => {
-    // sums[month][hour] = 该月该小时的负荷总和
-    const sums: number[][] = Array.from({ length: 12 }, () => Array.from({ length: 24 }, () => 0));
-    // daySets[month][hour] = 去重后的日期集合（YYYY-MM-DD），用于统计参与平均的天数
-    const daySets: Array<Array<Set<string>>> = Array.from({ length: 12 }, () => Array.from({ length: 24 }, () => new Set<string>()));
-
-    for (const p of data) {
-      if (!p || !(p.timestamp instanceof Date) || !Number.isFinite(p.load)) continue;
-      const m = p.timestamp.getMonth(); // 0-11
-      const h = p.timestamp.getHours(); // 0-23
-      const dayKey = `${p.timestamp.getFullYear()}-${m + 1}-${p.timestamp.getDate()}`;
-      sums[m][h] += p.load;
-      daySets[m][h].add(dayKey);
-    }
-
-    // 计算平均值 curves[month] = [24个小时均值]
-    const curves: number[][] = Array.from({ length: 12 }, () => Array.from({ length: 24 }, () => 0));
-    const hasData: boolean[] = Array.from({ length: 12 }, () => false);
-    for (let m = 0; m < 12; m++) {
-      for (let h = 0; h < 24; h++) {
-        const days = daySets[m][h].size;
-        if (days > 0) {
-          hasData[m] = true;
-          curves[m][h] = sums[m][h] / days;
-        } else {
-          curves[m][h] = 0;
-        }
-      }
-    }
-    return { curves, hasData };
-  }, [data]);
-};
+// 月度日均聚合逻辑改为复用共享 Hook（保持口径一致）
 
 // 月份复选选择器（支持单选/多选两种模式）
 const MonthSelector: React.FC<{
@@ -273,4 +240,3 @@ export const MonthlyAverageStackedChart: React.FC<Props> = ({ data, height = 384
 };
 
 export default MonthlyAverageStackedChart;
-

@@ -1,4 +1,4 @@
-import type { Configuration, Schedule, DateRule } from './types';
+import type { Configuration, Schedule, DateRule, MonthlyTouPrices } from './types';
 import { INITIAL_APP_STATE } from './constants';
 
 const STORAGE_KEY = 'tou_schedule_configurations';
@@ -43,13 +43,25 @@ export const getConfiguration = async (id: string): Promise<Configuration | null
   await new Promise(resolve => setTimeout(resolve, 300));
   const allConfigs = getAllConfigsFromStorage();
   const config = allConfigs[id] || null;
+  if (!config) return null;
+  // 兼容历史配置：缺失 prices 字段时填充默认值
+  if (!('prices' in config.scheduleData)) {
+    const filled: Configuration = {
+      ...config,
+      scheduleData: {
+        ...config.scheduleData,
+        prices: INITIAL_APP_STATE.prices,
+      },
+    };
+    return filled;
+  }
   return config;
 };
 
 // Simulates saving (creating or updating) a configuration
 export const saveConfiguration = async (
   name: string,
-  scheduleData: { monthlySchedule: Schedule, dateRules: DateRule[] },
+  scheduleData: { monthlySchedule: Schedule; dateRules: DateRule[]; prices: MonthlyTouPrices },
   id: string | null = null
 ): Promise<Configuration> => {
   await new Promise(resolve => setTimeout(resolve, 500));

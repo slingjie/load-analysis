@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import type { Schedule, TierId, DateRule, OperatingLogicId, Configuration, CellData, BackendAnalysisMeta, BackendQualityReport, MonthlyTouPrices } from './types';
 import { INITIAL_APP_STATE, VALID_OP_LOGIC_IDS, VALID_TIER_IDS } from './constants';
 import * as api from './api';
@@ -21,6 +21,8 @@ import { LoadAnalysisPage } from './components/LoadAnalysisPage';
 import { EnergyMatrixPage } from './components/EnergyMatrixPage';
 import { QualityReportPage } from './components/QualityReportPage';
 import { PriceEditorPage } from './components/PriceEditorPage';
+import { FloatingSectionNav, type SectionItem } from './components/FloatingSectionNav';
+import { useScrollSpy } from './hooks/useScrollSpy';
 
 // 全局未捕获异常与未处理Promise拒绝的兜底日志，辅助定位白屏
 if (typeof window !== 'undefined') {
@@ -78,6 +80,55 @@ const App: React.FC = () => {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showLoadSlow, setShowLoadSlow] = useState(false);
   const loadFileInputRef = useRef<HTMLInputElement>(null);
+
+  // --- 悬浮目录：根据当前页面组织小节（仅桌面端展示） ---
+  const navSections: SectionItem[] = useMemo(() => {
+    switch (currentPage) {
+      case 'editor':
+        return [
+          { id: 'section-config', title: '配置管理' },
+          { id: 'section-edit-mode', title: '编辑模式' },
+          { id: 'section-tou-grid', title: '分时表格' },
+          { id: 'section-schedule-copy', title: '批量复制' },
+          { id: 'section-date-rules', title: '日期规则' },
+          { id: 'section-json-output', title: '数据导出' },
+        ];
+      case 'price':
+        return [
+          { id: 'section-price-table', title: '月份电价表' },
+          { id: 'section-price-batch', title: '批量设置' },
+          { id: 'section-price-chart', title: '时序图' },
+        ];
+      case 'analysis':
+        // 本项目中已隐藏上传功能，故不纳入目录
+        return [
+          { id: 'section-load-hour-curve', title: '小时负荷曲线' },
+          { id: 'section-monthly-stacked', title: '月度日均堆叠图' },
+          { id: 'section-monthly-overlay', title: '电价×月日均（双轴）' },
+          { id: 'section-analysis-note', title: '本页说明' },
+        ];
+      case 'matrix':
+        return [
+          { id: 'section-matrix-table', title: '日×时矩阵' },
+          { id: 'section-matrix-note', title: '本页说明' },
+        ];
+      case 'quality':
+        return loadQuality
+          ? [
+              { id: 'section-quality-base', title: '基础信息' },
+              { id: 'section-quality-missing-summary', title: '缺失总体情况' },
+              { id: 'section-quality-missing-month', title: '按月缺失统计' },
+              { id: 'section-quality-missing-days', title: '缺失日期列表' },
+              { id: 'section-quality-anomaly', title: '异常值统计' },
+              { id: 'section-quality-note', title: '本页说明' },
+            ]
+          : [ { id: 'section-quality-note', title: '本页说明' } ];
+      default:
+        return [];
+    }
+  }, [currentPage, loadQuality]);
+
+  const activeTocId = useScrollSpy(navSections.map(s => s.id), { topThreshold: 120 });
   
   // --- Schedule Data State ---
   const [appState, setAppState] = useState(INITIAL_APP_STATE);
@@ -586,58 +637,80 @@ const App: React.FC = () => {
     return <div className="min-h-screen flex items-center justify-center bg-slate-100"><div className="text-xl font-semibold text-slate-600">Loading Configurations...</div></div>;
   }
   
-  const navButtonBaseClasses = "px-6 py-2 rounded-md font-semibold text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500";
+  // 导航按钮：缩小内边距，降低头部整体高度
+  const navButtonBaseClasses = "px-4 py-1.5 rounded-md font-semibold text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500";
   const navButtonActiveClasses = "bg-white text-blue-600 shadow";
   const navButtonInactiveClasses = "bg-transparent text-slate-600 hover:bg-slate-300/50";
 
   return (
-    <div className="container mx-auto p-4 sm:p-6 lg:p-8">
-      <h1 className="text-3xl sm:text-4xl font-extrabold text-slate-800 mb-4 text-center">
-        Interactive Schedule & Load Analysis
-      </h1>
-
-      <nav className="mb-6 flex justify-center">
-        <div className="bg-slate-200 rounded-lg p-1 flex space-x-1">
-          <button 
-            onClick={() => setCurrentPage('editor')} 
-            className={`${navButtonBaseClasses} ${currentPage === 'editor' ? navButtonActiveClasses : navButtonInactiveClasses}`}
-            aria-current={currentPage === 'editor' ? 'page' : undefined}
-          >
-            Schedule Editor
-          </button>
-          <button 
-            onClick={() => setCurrentPage('price')} 
-            className={`${navButtonBaseClasses} ${currentPage === 'price' ? navButtonActiveClasses : navButtonInactiveClasses}`}
-            aria-current={currentPage === 'price' ? 'page' : undefined}
-          >
-            TOU Prices
-          </button>
-          <button 
-            onClick={() => setCurrentPage('analysis')} 
-            className={`${navButtonBaseClasses} ${currentPage === 'analysis' ? navButtonActiveClasses : navButtonInactiveClasses}`}
-             aria-current={currentPage === 'analysis' ? 'page' : undefined}
-          >
-            Load Analysis
-          </button>
-          <button 
-            onClick={() => setCurrentPage('matrix')} 
-            className={`${navButtonBaseClasses} ${currentPage === 'matrix' ? navButtonActiveClasses : navButtonInactiveClasses}`}
-             aria-current={currentPage === 'matrix' ? 'page' : undefined}
-          >
-            Energy Matrix
-          </button>
-          <button 
-            onClick={() => setCurrentPage('quality')} 
-            className={`${navButtonBaseClasses} ${currentPage === 'quality' ? navButtonActiveClasses : navButtonInactiveClasses}`}
-             aria-current={currentPage === 'quality' ? 'page' : undefined}
-          >
-            Data Quality
-          </button>
+    <>
+      {/* 悬浮导航栏：固定顶部，不随页面滚动 */}
+      <header className="fixed top-0 left-0 right-0 z-50 bg-white/90 backdrop-blur border-b border-slate-200">
+        <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-2">
+          {/* 顶部行：居中标题 + 右侧上传按钮（绝对定位保证标题真正居中） */}
+          <div className="relative flex items-center">
+            <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold text-slate-800 text-center w-full">
+              Interactive Schedule & Load Analysis
+            </h1>
+            <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-2">
+              <button
+                onClick={() => loadFileInputRef.current?.click()}
+                disabled={isLoadUploading}
+                className={`px-3 py-1.5 rounded-md font-semibold text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 ${isLoadUploading ? 'opacity-50 cursor-not-allowed' : ''} bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500`}
+              >
+                {isLoadUploading ? '处理中...' : (loadCleanedData.length > 0 ? '重新上传负荷' : '上传负荷文件')}
+              </button>
+            </div>
+          </div>
+          <nav className="mt-2 flex justify-center">
+            <div className="bg-slate-200 rounded-lg p-1 flex space-x-1">
+              <button 
+                onClick={() => setCurrentPage('editor')} 
+                className={`${navButtonBaseClasses} ${currentPage === 'editor' ? navButtonActiveClasses : navButtonInactiveClasses}`}
+                aria-current={currentPage === 'editor' ? 'page' : undefined}
+              >
+                Schedule Editor
+              </button>
+              <button 
+                onClick={() => setCurrentPage('price')} 
+                className={`${navButtonBaseClasses} ${currentPage === 'price' ? navButtonActiveClasses : navButtonInactiveClasses}`}
+                aria-current={currentPage === 'price' ? 'page' : undefined}
+              >
+                TOU Prices
+              </button>
+              <button 
+                onClick={() => setCurrentPage('analysis')} 
+                className={`${navButtonBaseClasses} ${currentPage === 'analysis' ? navButtonActiveClasses : navButtonInactiveClasses}`}
+                aria-current={currentPage === 'analysis' ? 'page' : undefined}
+              >
+                Load Analysis
+              </button>
+              <button 
+                onClick={() => setCurrentPage('matrix')} 
+                className={`${navButtonBaseClasses} ${currentPage === 'matrix' ? navButtonActiveClasses : navButtonInactiveClasses}`}
+                aria-current={currentPage === 'matrix' ? 'page' : undefined}
+              >
+                Energy Matrix
+              </button>
+              <button 
+                onClick={() => setCurrentPage('quality')} 
+                className={`${navButtonBaseClasses} ${currentPage === 'quality' ? navButtonActiveClasses : navButtonInactiveClasses}`}
+                aria-current={currentPage === 'quality' ? 'page' : undefined}
+              >
+                Data Quality
+              </button>
+            </div>
+          </nav>
         </div>
-      </nav>
+      </header>
+
+      {/* 内容容器：根据精简后的头部高度调整留白，避免遮挡 */}
+      <div className="container mx-auto p-4 sm:p-6 lg:p-8 pt-28">
+
+      {/* 导航已移动到固定顶部 */}
 
       {/* 全局：负荷文件上传（供 Load Analysis 与 Energy Matrix 共用） */}
-      <div className="mb-6 p-3 bg-slate-100 rounded-lg border border-slate-200 flex flex-col sm:flex-row items-start sm:items-center gap-3">
+      <div className="mt-4 mb-6 p-3 bg-slate-100 rounded-lg border border-slate-200 flex flex-col sm:flex-row items-start sm:items-center gap-3">
         <div className="text-sm text-slate-700 font-semibold">负荷文件：</div>
         <div className="flex items-center gap-3">
           <button
@@ -698,6 +771,8 @@ const App: React.FC = () => {
 
       {currentPage === 'editor' && (
         <>
+          {/* 配置管理 */}
+          <div id="section-config" className="scroll-mt-24">
           <ConfigurationManager
             configurations={configurations}
             currentConfigId={currentConfigId}
@@ -716,8 +791,10 @@ const App: React.FC = () => {
             onExport={handleExportConfig}
             onImportClick={handleImportClick}
           />
+          </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+          {/* 编辑模式 */}
+          <div id="section-edit-mode" className="scroll-mt-24 grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
             <EditModeSelector editMode={editMode} setEditMode={setEditMode} />
             {editMode === 'tou' 
                 ? <TierSelector selectedTier={selectedTier} onTierSelect={setSelectedTier} />
@@ -725,7 +802,8 @@ const App: React.FC = () => {
             }
           </div>
 
-          <div className="bg-white rounded-xl shadow-lg p-1 overflow-x-auto">
+          {/* 分时表格 */}
+          <div id="section-tou-grid" className="scroll-mt-24 bg-white rounded-xl shadow-lg p-1 overflow-x-auto">
              <TouGrid 
                 schedule={appState.monthlySchedule}
                 dateRules={appState.dateRules}
@@ -736,16 +814,20 @@ const App: React.FC = () => {
             />
           </div>
 
-           <div className="mt-6">
+           {/* 批量复制 */}
+           <div id="section-schedule-copy" className="scroll-mt-24 mt-6">
               <ScheduleCopier onCopy={handleCopySchedule} />
             </div>
 
+          {/* 日期规则 */}
+          <div id="section-date-rules" className="scroll-mt-24">
           <DateRuleManager 
             rules={appState.dateRules}
             onAdd={() => handleOpenModal(null)}
             onEdit={handleOpenModal}
             onDelete={handleDeleteRule}
           />
+          </div>
 
           <DateRuleModal
             isOpen={isModalOpen}
@@ -754,7 +836,10 @@ const App: React.FC = () => {
             onSave={handleSaveRule}
           />
 
-          <JsonOutput data={appState} />
+          {/* 数据导出 */}
+          <div id="section-json-output" className="scroll-mt-24">
+            <JsonOutput data={appState} />
+          </div>
         </>
       )}
 
@@ -800,7 +885,10 @@ const App: React.FC = () => {
             className="hidden"
             accept=".xlsx, application/vnd.openxmlformats-officedocument.spreadsheet.sheet"
         />
+      {/* 悬浮目录（固定定位，不随页面滚动改变位置） */}
+      <FloatingSectionNav sections={navSections} activeId={activeTocId} />
     </div>
+    </>
   );
 };
 

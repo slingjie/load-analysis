@@ -1,11 +1,12 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import type { Schedule, DateRule, BackendQualityReport, BackendAnalysisMeta } from '../types';
+import type { Schedule, DateRule, BackendQualityReport, BackendAnalysisMeta, MonthlyTouPrices } from '../types';
 import type { LoadDataPoint } from '../utils';
 import { analyzeLoadFile } from '../loadApi';
 // 使用 ECharts 渲染时间轴折线图
 // 使用 ECharts 渲染时间轴折线图
 import { EChartTimeSeries } from './EChartTimeSeries';
 import { MonthlyAverageStackedChart } from './MonthlyAverageStackedChart';
+import { MonthlyLoadPriceOverlayChart } from './MonthlyLoadPriceOverlayChart';
 
 // 已移除“5. 储能策略计算”功能相关类型与逻辑
 
@@ -13,6 +14,7 @@ interface LoadAnalysisPageProps {
   scheduleData: {
     monthlySchedule: Schedule;
     dateRules: DateRule[];
+    prices: MonthlyTouPrices;
   };
   externalCleanedData?: LoadDataPoint[];
   externalQualityReport?: BackendQualityReport | null;
@@ -32,8 +34,8 @@ const DataTable: React.FC<{ data: LoadDataPoint[] }> = ({ data }) => {
         <table className="min-w-full divide-y divide-slate-200">
           <thead className="bg-slate-50">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">时间戳（小时）</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">小时负荷 (kWh)</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">时间戳</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">负荷 (kW)</th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-slate-200">
@@ -199,12 +201,40 @@ export const LoadAnalysisPage: React.FC<LoadAnalysisPageProps> = ({ scheduleData
   const viewedData: LoadDataPoint[] = (externalCleanedData && externalCleanedData.length > 0) ? externalCleanedData : cleanedData;
   const viewedQuality: BackendQualityReport | null = (externalQualityReport !== undefined ? externalQualityReport : qualityReport);
   const viewedMeta: BackendAnalysisMeta | null = (externalMetaInfo !== undefined ? externalMetaInfo : metaInfo);
-  // 小时序列（升序），用于图表渲染
-  const hourSeries = useMemo(() => {
-    return [...viewedData]
-      .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
-      .map((d) => ({ x: d.timestamp, y: d.load }));
-  }, [viewedData]);
+  
+  // 粒度切换：15分钟(kW) 与 1小时平均(kW)
+  const [granularity, setGranularity] = useState<'15m' | '1h-avg'>(
+    '15m'
+  );
+  
+  // 根据粒度生成绘图序列
+  const displaySeries = useMemo(() => {
+    const sorted = [...viewedData].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    if (granularity === '15m') {
+      // 如实使用原始功率点（常见为15分钟）
+      return sorted.map((d) => ({ x: d.timestamp, y: d.load }));
+    }
+    // 1小时平均(kW)：对同一小时内的kW样本求均值
+    const buckets = new Map<number, { sum: number; count: number }>();
+    for (const d of sorted) {
+      if (!d || !(d.timestamp instanceof Date) || !Number.isFinite(d.load)) continue;
+      const hKey = new Date(
+        d.timestamp.getFullYear(),
+        d.timestamp.getMonth(),
+        d.timestamp.getDate(),
+        d.timestamp.getHours(),
+        0, 0, 0
+      ).getTime();
+      const cur = buckets.get(hKey) || { sum: 0, count: 0 };
+      cur.sum += d.load;
+      cur.count += 1;
+      buckets.set(hKey, cur);
+    }
+    const result = Array.from(buckets.entries())
+      .map(([ts, agg]) => ({ x: new Date(ts), y: agg.count > 0 ? agg.sum / agg.count : 0 }))
+      .sort((a, b) => a.x.getTime() - b.x.getTime());
+    return result;
+  }, [viewedData, granularity]);
   const resetZoom = useCallback(() => {
     if (echartResetRef.current) echartResetRef.current();
   }, []);
@@ -305,7 +335,7 @@ export const LoadAnalysisPage: React.FC<LoadAnalysisPageProps> = ({ scheduleData
       )}
 
       {shouldShowUploader && (
-        <div className="p-6 bg-white rounded-xl shadow-lg">
+        <div id="section-load-upload" className="scroll-mt-24 p-6 bg-white rounded-xl shadow-lg">
           <h2 className="text-2xl font-bold text-slate-800 mb-2">1. 上传负荷数据文件</h2>
           <p className="text-sm text-slate-600 mb-4">
             上传包含时间戳（或日期+时间）与负荷列的 Excel/CSV 文件（.xlsx / .csv），后端会自动完成清洗与小时级聚合。
@@ -337,11 +367,11 @@ export const LoadAnalysisPage: React.FC<LoadAnalysisPageProps> = ({ scheduleData
       )}
 
       {viewedData.length > 0 && (
-        <div className="p-6 bg-white rounded-xl shadow-lg">
+        <div id="section-load-hour-curve" className="scroll-mt-24 p-6 bg-white rounded-xl shadow-lg">
           <h2 className="text-2xl font-bold text-slate-800 mb-4">{prefixCurve}小时负荷曲线</h2>
         <div className="relative h-96">
           <EChartTimeSeries
-            data={hourSeries}
+            data={displaySeries}
             height={384}
             showArea={false}
             useAxisBreak={true}
@@ -350,35 +380,72 @@ export const LoadAnalysisPage: React.FC<LoadAnalysisPageProps> = ({ scheduleData
           />
         </div>
         {/* 已使用 ECharts 自带 slider dataZoom，此处不再渲染自定义滑块 */}
-        <div className="flex items-center justify-between mt-2 text-xs text-slate-600">
-          <span>提示：底部滑块拖动双柄/选区调整范围；拖拽平移；滚轮缩放；双击放大</span>
-          <div className="flex items-center gap-3">
-            <label className="inline-flex items-center gap-1 select-none cursor-pointer">
-              <input
-                type="checkbox"
-                className="accent-slate-600"
-                checked={showBreakLabels}
-                onChange={(e) => setShowBreakLabels(e.target.checked)}
-              />
-              <span>显示断轴时间标签</span>
-            </label>
-            <button onClick={resetZoom} className="px-2 py-1 border border-slate-300 rounded-md hover:bg-slate-50">重置缩放</button>
+          <div className="flex items-center justify-between mt-2 text-xs text-slate-600">
+            <span>提示：底部滑块拖动双柄/选区调整范围；拖拽平移；滚轮缩放；双击放大</span>
+            <div className="flex items-center gap-3">
+              {/* 粒度切换控件 */}
+              <div className="inline-flex items-center gap-2 select-none">
+                <span className="text-slate-700">粒度</span>
+                <label className="inline-flex items-center gap-1 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="granularity"
+                    className="accent-slate-600"
+                    checked={granularity === '15m'}
+                    onChange={() => setGranularity('15m')}
+                  />
+                  <span>15m (kW)</span>
+                </label>
+                <label className="inline-flex items-center gap-1 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="granularity"
+                    className="accent-slate-600"
+                    checked={granularity === '1h-avg'}
+                    onChange={() => setGranularity('1h-avg')}
+                  />
+                  <span>1h (kW平均)</span>
+                </label>
+              </div>
+              <label className="inline-flex items-center gap-1 select-none cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="accent-slate-600"
+                  checked={showBreakLabels}
+                  onChange={(e) => setShowBreakLabels(e.target.checked)}
+                />
+                <span>显示断轴时间标签</span>
+              </label>
+              <button onClick={resetZoom} className="px-2 py-1 border border-slate-300 rounded-md hover:bg-slate-50">重置缩放</button>
+            </div>
           </div>
-        </div>
         </div>
       )}
 
       {viewedData.length > 0 && (
-        <div className="p-6 bg-white rounded-xl shadow-lg">
+        <div id="section-monthly-stacked" className="scroll-mt-24 p-6 bg-white rounded-xl shadow-lg">
           <h2 className="text-2xl font-bold text-slate-800 mb-4">{prefixMonthly}月度日平均负荷堆叠图（0–24点）</h2>
           <MonthlyAverageStackedChart data={viewedData} height={384} />
         </div>
       )}
 
+      {viewedData.length > 0 && (
+        <div id="section-monthly-overlay" className="scroll-mt-24 p-6 bg-white rounded-xl shadow-lg">
+          <h2 className="text-2xl font-bold text-slate-800 mb-4">3. 电价时段与月日平均负荷曲线（双 Y 轴）</h2>
+          <MonthlyLoadPriceOverlayChart
+            data={viewedData}
+            monthlySchedule={scheduleData.monthlySchedule}
+            dateRules={scheduleData.dateRules}
+            prices={(scheduleData as any).prices}
+            height={384}
+          />
+        </div>
+      )}
+
       {/* 本页说明（固定显示在页面底部） */}
-      <div className="p-4 bg-slate-50 rounded-lg border border-slate-300 text-sm text-slate-600">
-        本页说明：展示两类负荷可视化——“小时负荷曲线”与“月度日平均负荷堆叠图 (0–24 点)”。
-        曲线图支持断轴、滚轮缩放、拖拽平移与重置缩放；堆叠图适合对比不同月份在各小时的平均用电水平，帮助识别尖峰、低谷与周期性特征。
+      <div id="section-analysis-note" className="scroll-mt-24 p-4 bg-slate-50 rounded-lg border border-slate-300 text-sm text-slate-600">
+        本页说明：本页包含三类可视化——“小时负荷曲线”、“月度日平均负荷堆叠图(0–24点)”与“电价时段与月日平均负荷双轴图”。
+        其中双轴图横轴为时间，左轴为负荷(kW)，右轴为电价(元/kWh)，支持“按月默认规则/按日期规则”切换并可开关 TOU 背景。
         如上传数据量较大，首次渲染可能稍慢，属正常现象。
       </div>
     </div>

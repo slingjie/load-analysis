@@ -1,4 +1,4 @@
-import type { TierInfo, Schedule, TierId, DateRule, OperatingLogicInfo, OperatingLogicId } from './types';
+import type { TierInfo, Schedule, TierId, DateRule, OperatingLogicInfo, OperatingLogicId, MonthlyTouPrices, PriceMap } from './types';
 
 export const TIER_DEFINITIONS: readonly TierInfo[] = [
   { id: '深', name: 'Deep Valley', color: 'bg-green-400', textColor: 'text-green-900' },
@@ -69,4 +69,10 @@ export const INITIAL_MONTHLY_SCHEDULE: Schedule = INITIAL_MONTHLY_SCHEDULE_TOU.m
 export const INITIAL_APP_STATE = {
   monthlySchedule: INITIAL_MONTHLY_SCHEDULE,
   dateRules: [] as DateRule[],
+  // 默认电价（元/kWh），精度建议 4 位；深/尖默认为空
+  prices: ((): MonthlyTouPrices => {
+    const base: PriceMap = { '深': null, '谷': 0.3000, '平': 0.6000, '峰': 0.9000, '尖': null };
+    // 为避免对象引用共享，这里为 12 个月生成独立副本
+    return Array.from({ length: 12 }, () => ({ ...base }));
+  })(),
 }

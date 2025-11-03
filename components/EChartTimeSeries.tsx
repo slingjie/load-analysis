@@ -127,12 +127,43 @@ export const EChartTimeSeries: React.FC<Props> = ({ data, height = 384, lineColo
         // 3) 图表配置（启用断轴）
         const option = {
           backgroundColor: 'transparent',
-          tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+          // 提示框与十字准星：统一到“分钟”精度，确保展示原始15分钟数据点
+          tooltip: {
+            trigger: 'axis',
+            axisPointer: {
+              type: 'cross',
+              snap: true,
+              label: {
+                formatter: (p: any) => {
+                  const v = p?.value ?? p?.axisValue;
+                  try { return (echarts?.time?.format ? echarts.time.format(v, '{MM}-{dd} {HH}:{mm}') : new Date(v).toLocaleString()); }
+                  catch { return new Date(v).toLocaleString(); }
+                }
+              }
+            },
+            formatter: (params: any) => {
+              const list = Array.isArray(params) ? params : [params];
+              const ts = list[0]?.axisValue ?? list[0]?.value?.[0];
+              const timeStr = (() => {
+                try { return (echarts?.time?.format ? echarts.time.format(ts, '{yyyy}-{MM}-{dd} {HH}:{mm}') : new Date(ts).toLocaleString()); }
+                catch { return new Date(ts).toLocaleString(); }
+              })();
+              const lines = list.map((p: any) => {
+                const val = Array.isArray(p?.value) ? p.value[1] : p?.value;
+                const num = Number(val);
+                const valStr = Number.isFinite(num) ? num.toFixed(3) : String(val ?? '');
+                return `${p.marker}${p.seriesName}: ${valStr}`;
+              });
+              return `${timeStr}<br/>${lines.join('<br/>')}`;
+            }
+          },
           grid: { left: 40, right: 20, top: 20, bottom: 80 },
           // 时间轴（不使用 ECharts 内置 breaks，采用显式断开 + 标记方案）
           xAxis: {
             type: 'time',
             boundaryGap: false,
+            // 最小间隔使用推断步长（如15分钟），避免坐标轴过度聚合
+            minInterval: estimateStepMs,
             axisLabel: {
               hideOverlap: true,
               formatter: (value: number) => {
@@ -148,12 +179,14 @@ export const EChartTimeSeries: React.FC<Props> = ({ data, height = 384, lineColo
           ],
           series: [
             {
-              name: '小时负荷 (kWh)',
+              // 单位按原始文件口径为功率kW
+              name: '负荷 (kW)',
               type: 'line',
               showSymbol: false,
               smooth: false,
               connectNulls: false,
-              sampling: 'lttb',
+              // 若为细粒度(<=15min)数据，关闭下采样以保证悬浮提示精度
+              sampling: estimateStepMs <= 15 * 60 * 1000 ? undefined as any : 'lttb',
               itemStyle: { color: lineColor },
               lineStyle: { width: 1.5 },
               areaStyle: showArea ? { opacity: 0.25 } : undefined,

@@ -19,7 +19,7 @@ export const QualityReportPanel: React.FC<{ report: BackendQualityReport; meta: 
       <h2 className="text-2xl font-bold text-slate-800 mb-4">数据完整性分析报告</h2>
 
       {/* 基础信息 */}
-      <div className="grid gap-4 md:grid-cols-2 mb-6">
+      <div id="section-quality-base" className="scroll-mt-24 grid gap-4 md:grid-cols-2 mb-6">
         <div className="p-4 bg-slate-50 rounded-lg border border-slate-200">
           <h3 className="text-sm font-semibold text-slate-600 mb-3">基础信息</h3>
           <p className="text-sm text-slate-700">时间范围：{formatDateTime(meta?.start)} 至 {formatDateTime(meta?.end)}</p>
@@ -27,7 +27,7 @@ export const QualityReportPanel: React.FC<{ report: BackendQualityReport; meta: 
           <p className="text-sm text-slate-700">采样间隔：{meta?.source_interval_minutes ?? '-'} 分钟</p>
         </div>
 
-        <div className="p-4 bg-slate-50 rounded-lg border border-slate-200">
+        <div id="section-quality-missing-summary" className="p-4 bg-slate-50 rounded-lg border border-slate-200">
           <h3 className="text-sm font-semibold text-slate-600 mb-3">缺失总体情况</h3>
           <p className="text-sm text-slate-700">缺失天数：{missingDayCount} 天</p>
           <p className="text-sm text-slate-700">缺失小时数：{totalMissingHours} 小时</p>
@@ -43,7 +43,7 @@ export const QualityReportPanel: React.FC<{ report: BackendQualityReport; meta: 
       </div>
 
       {/* 按月分类缺失分析 */}
-      <div className="mb-6">
+      <div id="section-quality-missing-month" className="scroll-mt-24 mb-6">
         <h3 className="text-sm font-semibold text-slate-600 mb-3">按月分类缺失统计</h3>
         {missingByMonth.length === 0 ? (
           <p className="text-sm text-slate-700">无缺失数据。</p>
@@ -73,7 +73,7 @@ export const QualityReportPanel: React.FC<{ report: BackendQualityReport; meta: 
 
       {/* 缺失日期列表 */}
       {report.missing.missing_days.length > 0 && (
-        <div className="mb-6">
+        <div id="section-quality-missing-days" className="scroll-mt-24 mb-6">
           <h3 className="text-sm font-semibold text-slate-600 mb-3">缺失日期列表</h3>
           <div className="p-4 bg-slate-50 rounded-lg border border-slate-200">
             <div className="text-sm text-slate-700 space-y-1">
@@ -86,7 +86,7 @@ export const QualityReportPanel: React.FC<{ report: BackendQualityReport; meta: 
       )}
 
       {/* 异常值统计 */}
-      <div className="mb-6">
+      <div id="section-quality-anomaly" className="scroll-mt-24 mb-6">
         <h3 className="text-sm font-semibold text-slate-600 mb-3">异常值统计</h3>
         <div className="grid gap-4 md:grid-cols-3">
           {report.anomalies.map((item) => (

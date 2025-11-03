@@ -81,7 +81,7 @@ export const EnergyMatrixPage: React.FC<EnergyMatrixPageProps> = ({ scheduleData
       )}
 
       {shouldShowUploader && (
-        <div className="p-6 bg-white rounded-xl shadow-lg">
+        <div id="section-matrix-upload" className="scroll-mt-24 p-6 bg-white rounded-xl shadow-lg">
           <h2 className="text-2xl font-bold text-slate-800 mb-2">上传负荷数据文件（用于矩阵展示）</h2>
           <p className="text-sm text-slate-600 mb-4">上传 Excel/CSV，后端清洗为小时级数据后展示为“日×时”矩阵。</p>
           <button
@@ -105,11 +105,13 @@ export const EnergyMatrixPage: React.FC<EnergyMatrixPageProps> = ({ scheduleData
       )}
 
       {viewed.length > 0 && (
-        <EnergyMatrixTable data={viewed} scheduleData={scheduleData} height={720} />
+        <div id="section-matrix-table" className="scroll-mt-24">
+          <EnergyMatrixTable data={viewed} scheduleData={scheduleData} height={720} />
+        </div>
       )}
 
       {/* 本页说明（固定显示在页面底部） */}
-      <div className="p-4 bg-slate-50 rounded-lg border border-slate-300 text-sm text-slate-600">
+      <div id="section-matrix-note" className="scroll-mt-24 p-4 bg-slate-50 rounded-lg border border-slate-300 text-sm text-slate-600">
         本页说明：将小时级用电量转换为“日×时”矩阵，并叠加 TOU 分时与运行逻辑标签，便于定位异常日/异常时段与班次规律。
         可按年份与月份筛选；全年模式下单元格数量较多（约 365×24），渲染可能偏慢，建议优先按月查看。
       </div>

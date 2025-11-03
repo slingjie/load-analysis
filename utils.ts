@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx';
 import { MONTHS, HOURS } from './constants';
-import type { Schedule, DateRule } from './types';
+import type { Schedule, DateRule, MonthlyTouPrices, PriceMap } from './types';
 
 // Helper function to format date range string for Excel export
 export const formatDateRange = (startDate: string, endDate: string): string => {
@@ -12,7 +12,7 @@ export const formatDateRange = (startDate: string, endDate: string): string => {
 
 // Core Excel export logic
 export const exportScheduleToExcel = (
-  data: { monthlySchedule: Schedule; dateRules: DateRule[] },
+  data: { monthlySchedule: Schedule; dateRules: DateRule[]; prices?: MonthlyTouPrices },
   filename: string
 ): void => {
   const wb = XLSX.utils.book_new();
@@ -53,6 +53,24 @@ export const exportScheduleToExcel = (
     ]);
     const rulesOpLogicSheet = XLSX.utils.aoa_to_sheet([rulesHeader, ...rulesOpLogicData]);
     XLSX.utils.book_append_sheet(wb, rulesOpLogicSheet, 'Date Rules OpLogic');
+  }
+
+  // --- TOU Prices Sheet ---
+  // 表头：Month + 深/谷/平/峰/尖（顺序与 TierId 集一致）
+  // 导出 TOU 价格表表头顺序：Month | 尖 | 峰 | 平 | 谷 | 深
+  const priceHeader = ['Month', '尖', '峰', '平', '谷', '深'];
+  const prices: MonthlyTouPrices | undefined = data.prices as any;
+  if (prices && Array.isArray(prices) && prices.length === 12) {
+    const priceData = prices.map((pm: PriceMap, index) => [
+      MONTHS[index],
+      pm['尖'] ?? '',
+      pm['峰'] ?? '',
+      pm['平'] ?? '',
+      pm['谷'] ?? '',
+      pm['深'] ?? '',
+    ]);
+    const priceSheet = XLSX.utils.aoa_to_sheet([priceHeader, ...priceData]);
+    XLSX.utils.book_append_sheet(wb, priceSheet, 'TOU Prices');
   }
 
   // Sanitize filename
