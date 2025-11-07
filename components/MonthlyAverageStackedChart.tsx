@@ -157,7 +157,30 @@ export const MonthlyAverageStackedChart: React.FC<Props> = ({ data, height = 384
           backgroundColor: 'transparent',
           tooltip: {
             trigger: 'axis',
-            valueFormatter: (v: any) => (Number.isFinite(v) ? `${v} kW` : `${v}`),
+            axisPointer: {
+              label: {
+                // 将小时数字格式化为 HH:00
+                formatter: (p: any) => {
+                  const h = Number(p?.value ?? p?.axisValue ?? 0);
+                  const hh = String(Math.max(0, Math.min(23, Math.floor(h)))).padStart(2, '0');
+                  return `${hh}:00`;
+                },
+              },
+            },
+            // 自定义浮窗：显示 HH:00 与系列值（单位 kW）
+            formatter: (params: any[]) => {
+              const list = Array.isArray(params) ? params : [params];
+              const idx = list?.[0]?.dataIndex ?? 0;
+              const h = Math.max(0, Math.min(23, Number(idx)));
+              const hh = String(h).padStart(2, '0');
+              const lines = list.map((p: any) => {
+                const val = Array.isArray(p?.value) ? p.value[1] : p?.value;
+                const num = Number(val);
+                const valStr = Number.isFinite(num) ? `${num.toFixed(3)} kW` : String(val ?? '');
+                return `${p.marker}${p.seriesName}: ${valStr}`;
+              });
+              return `${hh}:00<br/>${lines.join('<br/>')}`;
+            },
           },
           legend: { type: 'scroll' as const, top: 0 },
           grid: { left: 48, right: endLabelEnabled ? 80 : 24, top: 28, bottom: 48 },

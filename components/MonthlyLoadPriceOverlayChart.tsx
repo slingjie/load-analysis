@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { LoadDataPoint } from '../utils';
-import type { Schedule, DateRule, MonthlyTouPrices, PriceMap, TierId } from '../types';
+import type { Schedule, DateRule, MonthlyTouPrices, PriceMap, TierId, OperatingLogicId } from '../types';
 import { useMonthlyHourlyAverages } from '../hooks/useMonthlyHourlyAverages';
 
 // 动态按需加载 ECharts（CDN），与其他图表组件保持一致
@@ -78,6 +78,34 @@ const buildTouAreas = (hoursTou: TierId[]) => {
   return areas;
 };
 
+// 构造“储能逻辑（充/放/待机）”连续区间，用于以 markArea 的 label 文字标注
+const buildOpAreas = (hoursOp: OperatingLogicId[]) => {
+  const areas: any[] = [];
+  let i = 0;
+  while (i < hoursOp.length) {
+    const op = hoursOp[i];
+    let j = i + 1;
+    while (j < hoursOp.length && hoursOp[j] === op) j++;
+    // 仅对“充/放”显示标签；“待机”不输出标注
+    if (op !== '待机') {
+      const span = j - i; // 连续小时数
+      const textLabel = op; // 保持原文：充 / 放
+      areas.push([
+        {
+          xAxis: String(i),
+          // 使用透明背景，仅展示文字标注
+          itemStyle: { color: 'rgba(0,0,0,0)' },
+          name: op,
+          label: { formatter: textLabel },
+        },
+        { xAxis: String(Math.min(j, 24)) },
+      ]);
+    }
+    i = j;
+  }
+  return areas;
+};
+
 export const MonthlyLoadPriceOverlayChart: React.FC<Props> = ({ data, monthlySchedule, dateRules, prices, height = 384 }) => {
   // 计算 12×24 的“月度日平均负荷(kW)”
   const { curves, hasData } = useMonthlyHourlyAverages(data);
@@ -88,6 +116,7 @@ export const MonthlyLoadPriceOverlayChart: React.FC<Props> = ({ data, monthlySch
   const [viewIndex, setViewIndex] = useState<number>(defaultMonth);
   const [showTouBg, setShowTouBg] = useState<boolean>(true); // 默认开启 TOU 背景
   const [showPriceLine, setShowPriceLine] = useState<boolean>(false); // 电价线默认关闭
+  const [showOpLabels, setShowOpLabels] = useState<boolean>(true); // 默认显示储能逻辑文字
 
   // 同步默认月（当 hasData 变化时）
   useEffect(() => {
@@ -132,6 +161,21 @@ export const MonthlyLoadPriceOverlayChart: React.FC<Props> = ({ data, monthlySch
     }
   }, [showTouBg, viewMode, viewIndex, monthlySchedule, dateRules]);
 
+  // 为储能逻辑生成分段（仅用于显示文字，不改变背景）
+  const opAreas = useMemo(() => {
+    if (!showOpLabels) return [] as any[];
+    if (viewMode === 'month') {
+      const monthIdx = Math.min(Math.max(viewIndex, 0), 11);
+      const hoursOp = monthlySchedule[monthIdx].map(c => c.op as OperatingLogicId);
+      return buildOpAreas(hoursOp);
+    } else {
+      const rule = dateRules[viewIndex];
+      if (!rule) return [] as any[];
+      const hoursOp = rule.schedule.map(c => c.op as OperatingLogicId);
+      return buildOpAreas(hoursOp);
+    }
+  }, [showOpLabels, viewMode, viewIndex, monthlySchedule, dateRules]);
+
   // 初始化与更新图表
   useEffect(() => {
     let echarts: any = null;
@@ -144,17 +188,32 @@ export const MonthlyLoadPriceOverlayChart: React.FC<Props> = ({ data, monthlySch
         backgroundColor: 'transparent',
         tooltip: {
           trigger: 'axis',
+          axisPointer: {
+            label: {
+              formatter: (p: any) => {
+                const h = Number(p?.value ?? p?.axisValue ?? 0);
+                const hh = String(Math.max(0, Math.min(23, Math.floor(h)))).padStart(2, '0');
+                return `${hh}:00`;
+              }
+            }
+          },
           formatter: (params: any[]) => {
             const idx = params?.[0]?.dataIndex ?? 0;
             const h0 = Math.min(idx, 23);
-            const hourLabel = `${h0}-${h0 + 1}`;
+            const hh = String(h0).padStart(2, '0');
+            const hourLabel = `${hh}:00`;
             const load = loadPoints[h0] ?? null;
             const price = pricePoints[h0]?.price ?? null;
             const tou = pricePoints[h0]?.tou ?? null;
+            const monthIdx = Math.min(Math.max(viewIndex, 0), 11);
+            const op = (viewMode === 'month'
+              ? monthlySchedule[monthIdx]?.[h0]?.op
+              : dateRules[viewIndex]?.schedule?.[h0]?.op) as OperatingLogicId | undefined;
             const loadStr = load == null || Number.isNaN(load) ? '—' : Number(load).toFixed(3) + ' kW';
             const priceStr = price == null || Number.isNaN(Number(price)) ? '—' : Number(price).toFixed(4) + ' 元/kWh';
             const touStr = tou ?? '—';
-            return `时段：${hourLabel}<br/>TOU：${touStr}<br/>负荷：${loadStr}<br/>电价：${priceStr}`;
+            const opStr = op ?? '—';
+            return `时段：${hourLabel}<br/>TOU：${touStr}<br/>储能：${opStr}<br/>负荷：${loadStr}<br/>电价：${priceStr}`;
           },
         },
         legend: { type: 'plain', top: 0 },
@@ -175,16 +234,35 @@ export const MonthlyLoadPriceOverlayChart: React.FC<Props> = ({ data, monthlySch
                 { type: 'value' as const, name: '负荷 (kW)', axisLabel: { formatter: (v: number) => `${v}` }, boundaryGap: [0, '5%'] },
               ]
         ),
-        series: (
-          showPriceLine
+        series: (() => {
+          const base = showPriceLine
             ? [
                 { name: '月日平均负荷', type: 'line', yAxisIndex: 0, showSymbol: false, smooth: false, sampling: 'lttb', lineStyle: { width: 1.8, color: '#ef4444' }, emphasis: { focus: 'series', lineStyle: { width: 2.2 } }, data: loadPoints },
                 { name: '电价', type: 'line', yAxisIndex: 1, step: 'end', showSymbol: false, lineStyle: { width: 2, color: '#2563eb' }, data: pricePoints.length > 0 ? [...pricePoints.map(p => (p.price == null ? null : Number(p.price.toFixed(4)))), pricePoints[pricePoints.length - 1]?.price ?? null] : [], connectNulls: false, markArea: (touAreas && touAreas.length > 0 && showTouBg) ? { silent: true, label: { show: false }, data: touAreas } : undefined },
               ]
             : [
                 { name: '月日平均负荷', type: 'line', yAxisIndex: 0, showSymbol: false, smooth: false, sampling: 'lttb', lineStyle: { width: 1.8, color: '#ef4444' }, emphasis: { focus: 'series', lineStyle: { width: 2.2 } }, data: loadPoints, markArea: (touAreas && touAreas.length > 0 && showTouBg) ? { silent: true, label: { show: false }, data: touAreas } : undefined },
-              ]
-        ),
+              ];
+          // 追加“储能逻辑”标注层（仅显示文字，无背景）
+          if (opAreas && opAreas.length > 0) {
+            base.push({
+              name: '储能逻辑',
+              type: 'line',
+              yAxisIndex: 0,
+              showSymbol: false,
+              // 该系列不渲染折线，仅承载 markArea
+              data: [],
+              z: 10,
+              markArea: {
+                silent: true,
+                zlevel: 1,
+                label: { show: true, color: '#334155', fontSize: 11, position: 'insideTop', align: 'center' },
+                data: opAreas,
+              },
+            } as any);
+          }
+          return base;
+        })(),
       } as any;
 
       chartRef.current.setOption(option, true);
@@ -214,17 +292,32 @@ export const MonthlyLoadPriceOverlayChart: React.FC<Props> = ({ data, monthlySch
       backgroundColor: 'transparent',
       tooltip: {
         trigger: 'axis',
+        axisPointer: {
+          label: {
+            formatter: (p: any) => {
+              const h = Number(p?.value ?? p?.axisValue ?? 0);
+              const hh = String(Math.max(0, Math.min(23, Math.floor(h)))).padStart(2, '0');
+              return `${hh}:00`;
+            }
+          }
+        },
         formatter: (params: any[]) => {
           const idx = params?.[0]?.dataIndex ?? 0;
           const h0 = Math.min(idx, 23);
-          const hourLabel = `${h0}-${h0 + 1}`;
+          const hh = String(h0).padStart(2, '0');
+          const hourLabel = `${hh}:00`;
           const load = loadPoints[h0] ?? null;
           const price = pricePoints[h0]?.price ?? null;
           const tou = pricePoints[h0]?.tou ?? null;
+          const monthIdx = Math.min(Math.max(viewIndex, 0), 11);
+          const op = (viewMode === 'month'
+            ? monthlySchedule[monthIdx]?.[h0]?.op
+            : dateRules[viewIndex]?.schedule?.[h0]?.op) as OperatingLogicId | undefined;
           const loadStr = load == null || Number.isNaN(load) ? '—' : Number(load).toFixed(3) + ' kW';
           const priceStr = price == null || Number.isNaN(Number(price)) ? '—' : Number(price).toFixed(4) + ' 元/kWh';
           const touStr = tou ?? '—';
-          return `时段：${hourLabel}<br/>TOU：${touStr}<br/>负荷：${loadStr}<br/>电价：${priceStr}`;
+          const opStr = op ?? '—';
+          return `时段：${hourLabel}<br/>TOU：${touStr}<br/>储能：${opStr}<br/>负荷：${loadStr}<br/>电价：${priceStr}`;
         },
       },
       legend: { type: 'plain', top: 0 },
@@ -240,16 +333,33 @@ export const MonthlyLoadPriceOverlayChart: React.FC<Props> = ({ data, monthlySch
               { type: 'value', name: '负荷 (kW)', boundaryGap: [0, '5%'] },
             ]
       ),
-      series: (
-        showPriceLine
+      series: (() => {
+        const base = showPriceLine
           ? [
               { name: '月日平均负荷', type: 'line', yAxisIndex: 0, showSymbol: false, smooth: false, sampling: 'lttb', lineStyle: { width: 1.8, color: '#ef4444' }, data: loadPoints },
               { name: '电价', type: 'line', yAxisIndex: 1, step: 'end', showSymbol: false, lineStyle: { width: 2, color: '#2563eb' }, data: pricePoints.length > 0 ? [...pricePoints.map(p => (p.price == null ? null : Number(p.price.toFixed(4)))), pricePoints[pricePoints.length - 1]?.price ?? null] : [], connectNulls: false, markArea: (touAreas && touAreas.length > 0 && showTouBg) ? { silent: true, label: { show: false }, data: touAreas } : undefined },
             ]
           : [
               { name: '月日平均负荷', type: 'line', yAxisIndex: 0, showSymbol: false, smooth: false, sampling: 'lttb', lineStyle: { width: 1.8, color: '#ef4444' }, data: loadPoints, markArea: (touAreas && touAreas.length > 0 && showTouBg) ? { silent: true, label: { show: false }, data: touAreas } : undefined },
-            ]
-      ),
+            ];
+        if (opAreas && opAreas.length > 0) {
+          base.push({
+            name: '储能逻辑',
+            type: 'line',
+            yAxisIndex: 0,
+            showSymbol: false,
+            data: [],
+            z: 10,
+            markArea: {
+              silent: true,
+              zlevel: 1,
+              label: { show: true, color: '#334155', fontSize: 11, position: 'insideTop', align: 'center' },
+              data: opAreas,
+            },
+          } as any);
+        }
+        return base;
+      })(),
     } as any;
     try {
       // 不再主动 clear，直接以 notMerge=true 覆盖完整配置，确保类型等元数据齐全
@@ -257,13 +367,14 @@ export const MonthlyLoadPriceOverlayChart: React.FC<Props> = ({ data, monthlySch
     } catch (e) {
       console.error('[MonthlyLoadPriceOverlayChart] 更新图表失败', e);
     }
-  }, [hours, loadPoints, pricePoints, touAreas, showPriceLine, showTouBg]);
+  }, [hours, loadPoints, pricePoints, touAreas, opAreas, showPriceLine, showTouBg]);
 
   // 控件：展示模式 + 月份/规则 + TOU 背景开关
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      {/* 顶部控制区：改为两行布局，第一行显示“展示模式 + 月份/规则选择”，第二行显示开关与 TOU 标签 */}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-3 flex-wrap">
           <label className="text-sm text-slate-700 flex items-center gap-2">
             <span>展示模式</span>
             <select
@@ -277,20 +388,30 @@ export const MonthlyLoadPriceOverlayChart: React.FC<Props> = ({ data, monthlySch
           </label>
 
           {viewMode === 'month' ? (
-            <label className="text-sm text-slate-700 flex items-center gap-2">
-              <span>月份</span>
-              <select
-                className="border border-slate-300 rounded px-2 py-1 text-sm"
-                value={viewIndex}
-                onChange={(e) => setViewIndex(Number(e.target.value))}
-              >
+            <div className="text-sm text-slate-700 flex items-center gap-3">
+              <span className="font-medium">月份</span>
+              {/* 中文注释：将月份下拉改为 1-12 标签按钮网格，单选模式，便于快速切换 */}
+              <div className="grid grid-cols-6 sm:grid-cols-8 lg:grid-cols-12 gap-2">
                 {Array.from({ length: 12 }, (_, i) => (
-                  <option key={i} value={i} disabled={!hasData[i]}>
-                    {['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][i]}{!hasData[i] ? '（无数据）' : ''}
-                  </option>
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => hasData[i] && setViewIndex(i)}
+                    disabled={!hasData[i]}
+                    className={
+                      'px-2 py-1 rounded-md border text-sm ' +
+                      (viewIndex === i
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50') +
+                      (!hasData[i] ? ' opacity-50 cursor-not-allowed' : '')
+                    }
+                    title={hasData[i] ? '' : '无该月数据'}
+                  >
+                    {i + 1}月
+                  </button>
                 ))}
-              </select>
-            </label>
+              </div>
+            </div>
           ) : (
             <label className="text-sm text-slate-700 flex items-center gap-2">
               <span>规则</span>
@@ -311,7 +432,17 @@ export const MonthlyLoadPriceOverlayChart: React.FC<Props> = ({ data, monthlySch
           )}
         </div>
 
-        <div className="flex items-center gap-4">
+        {/* 第二行：开关与 TOU 标签，避免与月份选择同一行过于拥挤 */}
+        <div className="flex items-center gap-4 flex-wrap">
+          <label className="inline-flex items-center gap-2 select-none cursor-pointer text-sm text-slate-700">
+            <input
+              type="checkbox"
+              className="accent-slate-600"
+              checked={showOpLabels}
+              onChange={(e) => setShowOpLabels(e.target.checked)}
+            />
+            <span>显示储能逻辑</span>
+          </label>
           <label className="inline-flex items-center gap-2 select-none cursor-pointer text-sm text-slate-700">
             <input
               type="checkbox"
@@ -330,7 +461,7 @@ export const MonthlyLoadPriceOverlayChart: React.FC<Props> = ({ data, monthlySch
             />
             <span>显示 TOU 背景</span>
           </label>
-          {/* 右上角 TOU 颜色标签（与“TOU Price”页风格一致） */}
+          {/* TOU 颜色标签（与“TOU Price”页风格一致），放到第二行右侧 */}
           <div className="hidden md:flex items-center gap-3 px-2 py-1 bg-white/90 border border-slate-200 rounded-lg shadow-sm">
             {(['深','谷','平','峰','尖'] as TierId[]).map(t => (
               <span key={t} className="inline-flex items-center gap-1.5 text-xs text-slate-700">

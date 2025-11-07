@@ -6,6 +6,7 @@ import { analyzeLoadFile } from '../loadApi';
 // 使用 ECharts 渲染时间轴折线图
 import { EChartTimeSeries } from './EChartTimeSeries';
 import { MonthlyAverageStackedChart } from './MonthlyAverageStackedChart';
+import { YearlyAverageStackedChart } from './YearlyAverageStackedChart';
 import { MonthlyLoadPriceOverlayChart } from './MonthlyLoadPriceOverlayChart';
 
 // 已移除“5. 储能策略计算”功能相关类型与逻辑
@@ -324,6 +325,8 @@ export const LoadAnalysisPage: React.FC<LoadAnalysisPageProps> = ({ scheduleData
   const shouldShowUploader = !hideUploader && (!externalCleanedData || externalCleanedData.length === 0);
   const prefixCurve = shouldShowUploader ? '2. ' : '1. ';
   const prefixMonthly = shouldShowUploader ? '3. ' : '2. ';
+  const prefixYearly = shouldShowUploader ? '4. ' : '3. ';
+  const prefixOverlay = shouldShowUploader ? '5. ' : '4. ';
 
   return (
     <div className="space-y-8">
@@ -430,8 +433,15 @@ export const LoadAnalysisPage: React.FC<LoadAnalysisPageProps> = ({ scheduleData
       )}
 
       {viewedData.length > 0 && (
+        <div id="section-yearly-stacked" className="scroll-mt-24 p-6 bg-white rounded-xl shadow-lg">
+          <h2 className="text-2xl font-bold text-slate-800 mb-4">{prefixYearly}年度日平均负荷堆叠图（0–24点）</h2>
+          <YearlyAverageStackedChart data={viewedData} height={360} />
+        </div>
+      )}
+
+      {viewedData.length > 0 && (
         <div id="section-monthly-overlay" className="scroll-mt-24 p-6 bg-white rounded-xl shadow-lg">
-          <h2 className="text-2xl font-bold text-slate-800 mb-4">3. 电价时段与月日平均负荷曲线（双 Y 轴）</h2>
+          <h2 className="text-2xl font-bold text-slate-800 mb-4">{prefixOverlay}电价时段与月日平均负荷曲线（双 Y 轴）</h2>
           <MonthlyLoadPriceOverlayChart
             data={viewedData}
             monthlySchedule={scheduleData.monthlySchedule}
@@ -444,7 +454,7 @@ export const LoadAnalysisPage: React.FC<LoadAnalysisPageProps> = ({ scheduleData
 
       {/* 本页说明（固定显示在页面底部） */}
       <div id="section-analysis-note" className="scroll-mt-24 p-4 bg-slate-50 rounded-lg border border-slate-300 text-sm text-slate-600">
-        本页说明：本页包含三类可视化——“小时负荷曲线”、“月度日平均负荷堆叠图(0–24点)”与“电价时段与月日平均负荷双轴图”。
+        本页说明：本页包含四类可视化——“小时负荷曲线”、“月度日平均负荷堆叠图(0–24点)”、“年度日平均负荷堆叠图(0–24点)”与“电价时段与月日平均负荷双轴图”。
         其中双轴图横轴为时间，左轴为负荷(kW)，右轴为电价(元/kWh)，支持“按月默认规则/按日期规则”切换并可开关 TOU 背景。
         如上传数据量较大，首次渲染可能稍慢，属正常现象。
       </div>
