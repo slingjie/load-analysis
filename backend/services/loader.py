@@ -4,6 +4,8 @@ from io import BytesIO
 from typing import Optional
 import itertools
 import logging
+import re
+from datetime import datetime
 
 import pandas as pd
 
@@ -152,10 +154,51 @@ def load_dataframe(file_bytes: bytes) -> pd.DataFrame:
         time_col = _locate_column(TIME_ALIASES, columns)
         logger.debug("未找到单列时间戳，尝试二列组合：date=%s, time=%s", date_col, time_col)
         if date_col and time_col:
+            # 先按原始“日期+时间”尝试解析
+            date_str = frame[date_col].astype(str).str.strip()
+            time_str = frame[time_col].astype(str).str.strip()
             timestamp_series = pd.to_datetime(
-                frame[date_col].astype(str).str.strip() + " " + frame[time_col].astype(str).str.strip(),
+                date_str + " " + time_str,
                 errors="coerce",
             )
+
+            # 若解析率偏低，尝试中文“X月Y日/YYYY年M月D日/全角数字”等规范化后重试
+            def _fullwidth_to_halfwidth(s: pd.Series) -> pd.Series:
+                mapping = str.maketrans({
+                    "０": "0", "１": "1", "２": "2", "３": "3", "４": "4",
+                    "５": "5", "６": "6", "７": "7", "８": "8", "９": "9",
+                })
+                return s.astype(str).str.translate(mapping)
+
+            def _normalize_cn_date(s: pd.Series) -> pd.Series:
+                # 将“YYYY年MM月DD日”->“YYYY/MM/DD”，将“MM月DD日”->“MM/DD”，并移除多余斜杠
+                s2 = _fullwidth_to_halfwidth(s).str.strip()
+                s2 = (
+                    s2.str.replace("年", "/", regex=False)
+                       .str.replace("月", "/", regex=False)
+                       .str.replace("日", "", regex=False)
+                )
+                s2 = s2.str.replace(r"/+", "/", regex=True).str.strip("/")
+                return s2
+
+            def _fill_year_if_missing(s: pd.Series, default_year: int) -> pd.Series:
+                # 如果形如 M/D 或 MM/DD，补充默认年份
+                def ensure_year(tok: str) -> str:
+                    if re.match(r"^\d{1,2}/\d{1,2}$", tok or ""):
+                        return f"{default_year}/" + tok
+                    return tok
+                return s.astype(str).apply(ensure_year)
+
+            parse_ratio = float(timestamp_series.notna().mean()) if len(timestamp_series) else 0.0
+            if parse_ratio < 0.6:
+                logger.debug("标准解析率偏低(%.3f)，尝试中文日期规范化后重试", parse_ratio)
+                norm_date = _normalize_cn_date(date_str)
+                default_year = datetime.now().year
+                norm_date = _fill_year_if_missing(norm_date, default_year)
+                ts2 = pd.to_datetime(norm_date + " " + time_str, errors="coerce")
+                if ts2.notna().sum() > timestamp_series.notna().sum():
+                    logger.debug("中文日期规范化提升解析：%s -> %s", int(timestamp_series.notna().sum()), int(ts2.notna().sum()))
+                    timestamp_series = ts2
         else:
             # 进入容错猜测：扫描列内容推断时间戳
             guessed_ts, g_date, g_time = _guess_timestamp_by_content()

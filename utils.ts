@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx';
 import { MONTHS, HOURS } from './constants';
-import type { Schedule, DateRule, MonthlyTouPrices, PriceMap } from './types';
+import type { Schedule, DateRule, MonthlyTouPrices, PriceMap, TierId } from './types';
 
 // Helper function to format date range string for Excel export
 export const formatDateRange = (startDate: string, endDate: string): string => {
@@ -76,6 +76,69 @@ export const exportScheduleToExcel = (
   // Sanitize filename
   const safeFilename = filename.replace(/[^a-z0-9]/gi, '_').toLowerCase();
   XLSX.writeFile(wb, `${safeFilename || 'configuration'}.xlsx`);
+};
+
+// 中文：导出“月度/每日统计”到 Excel
+// 参数说明：
+// - monthlyAgg: 12 个月的统计数组（index 0-11 对应 1-12 月），包含两组“充/放”与 TOU 汇总
+// - dailyByMonth: Map<月份索引, 当月每日明细数组>，每日明细包含 YYYY-MM-DD 与同样的列
+export const exportEnergySummaryToExcel = (
+  filename: string,
+  monthlyAgg: Array<{
+    g1c: number; g1f: number; g2c: number; g2f: number;
+    tou: Record<TierId, number>;
+  }>,
+  dailyByMonth: Map<number, Array<{
+    ymd: string;
+    g1c: number; g1f: number; g2c: number; g2f: number;
+    tou: Record<TierId, number>;
+  }>>
+) => {
+  const wb = XLSX.utils.book_new();
+
+  // 月度统计 Sheet
+  const monthlyHeader = ['月份', '充(1)', '放(1)', '充(2)', '放(2)', '尖', '峰', '平', '谷', '深'];
+  const monthlyRows = Array.from({ length: 12 }, (_, m) => [
+    `${m + 1}月`,
+    Number(monthlyAgg[m]?.g1c || 0),
+    Number(monthlyAgg[m]?.g1f || 0),
+    Number(monthlyAgg[m]?.g2c || 0),
+    Number(monthlyAgg[m]?.g2f || 0),
+    Number(monthlyAgg[m]?.tou['尖'] || 0),
+    Number(monthlyAgg[m]?.tou['峰'] || 0),
+    Number(monthlyAgg[m]?.tou['平'] || 0),
+    Number(monthlyAgg[m]?.tou['谷'] || 0),
+    Number(monthlyAgg[m]?.tou['深'] || 0),
+  ]);
+  const monthlySheet = XLSX.utils.aoa_to_sheet([monthlyHeader, ...monthlyRows]);
+  XLSX.utils.book_append_sheet(wb, monthlySheet, '月度统计');
+
+  // 每日统计 Sheet（跨年合并，包含月份列便于筛选）
+  const dailyHeader = ['日期', '月份', '充(1)', '放(1)', '充(2)', '放(2)', '尖', '峰', '平', '谷', '深'];
+  const dailyRows: any[][] = [];
+  for (let m = 0; m < 12; m++) {
+    const arr = dailyByMonth.get(m) || [];
+    for (const d of arr) {
+      dailyRows.push([
+        d.ymd,
+        `${m + 1}月`,
+        Number(d.g1c || 0),
+        Number(d.g1f || 0),
+        Number(d.g2c || 0),
+        Number(d.g2f || 0),
+        Number(d.tou['尖'] || 0),
+        Number(d.tou['峰'] || 0),
+        Number(d.tou['平'] || 0),
+        Number(d.tou['谷'] || 0),
+        Number(d.tou['深'] || 0),
+      ]);
+    }
+  }
+  const dailySheet = XLSX.utils.aoa_to_sheet([dailyHeader, ...dailyRows]);
+  XLSX.utils.book_append_sheet(wb, dailySheet, '每日统计');
+
+  const safeFilename = filename.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  XLSX.writeFile(wb, `${safeFilename || 'energy_summary'}.xlsx`);
 };
 
 

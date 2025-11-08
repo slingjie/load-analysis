@@ -3,6 +3,7 @@ import type { Schedule, DateRule, BackendAnalysisMeta, BackendQualityReport } fr
 import type { LoadDataPoint } from '../utils';
 import { analyzeLoadFile } from '../loadApi';
 import { EnergyMatrixTable } from './EnergyMatrixTable';
+import { MonthlySummaryTable } from './MonthlySummaryTable';
 
 interface EnergyMatrixPageProps {
   scheduleData: {
@@ -107,6 +108,12 @@ export const EnergyMatrixPage: React.FC<EnergyMatrixPageProps> = ({ scheduleData
       {viewed.length > 0 && (
         <div id="section-matrix-table" className="scroll-mt-24">
           <EnergyMatrixTable data={viewed} scheduleData={scheduleData} height={720} />
+        </div>
+      )}
+
+      {viewed.length > 0 && (
+        <div id="section-monthly-summary" className="scroll-mt-24">
+          <MonthlySummaryTable data={viewed} scheduleData={scheduleData} />
         </div>
       )}
 
