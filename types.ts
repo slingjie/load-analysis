@@ -107,3 +107,37 @@ export type PriceMap = Record<TierId, number | null>;
 
 // 12 个月的电价配置数组（索引 0-11 对应 1-12 月）
 export type MonthlyTouPrices = PriceMap[];
+
+// ---------------- 储能次数测算后端响应类型 ----------------
+export interface BackendStorageCyclesDay {
+  date: string;    // YYYY-MM-DD
+  cycles: number;
+}
+
+export interface BackendStorageCyclesMonth {
+  year_month: string; // YYYY-MM
+  cycles: number;
+}
+
+export interface BackendStorageCyclesYear {
+  year: number;  // 0 表示跨年或未知
+  cycles: number;
+}
+
+export interface BackendStorageQC {
+  notes: string[];
+  missing_prices: number;
+  missing_points: number;
+  merged_segments: number;
+  limit_mode?: 'monthly_demand_max' | 'transformer_capacity' | null;
+  transformer_limit_kw?: number | null;
+  monthly_demand_max: { year_month: string; max_kw: number }[];
+}
+
+export interface BackendStorageCyclesResponse {
+  year: BackendStorageCyclesYear;
+  months: BackendStorageCyclesMonth[];
+  days: BackendStorageCyclesDay[];
+  qc: BackendStorageQC;
+  excel_path: string | null;
+}

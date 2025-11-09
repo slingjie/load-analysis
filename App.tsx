@@ -20,6 +20,7 @@ import { ScheduleCopier } from './components/ScheduleCopier';
 import { LoadAnalysisPage } from './components/LoadAnalysisPage';
 import { EnergyMatrixPage } from './components/EnergyMatrixPage';
 import { QualityReportPage } from './components/QualityReportPage';
+import { StorageCyclesPage } from './components/StorageCyclesPage';
 import { PriceEditorPage } from './components/PriceEditorPage';
 import { FloatingSectionNav, type SectionItem } from './components/FloatingSectionNav';
 import { useScrollSpy } from './hooks/useScrollSpy';
@@ -59,7 +60,7 @@ const EditModeSelector: React.FC<{
 
 const App: React.FC = () => {
   // --- Page State ---
-  const [currentPage, setCurrentPage] = useState<'editor' | 'price' | 'analysis' | 'matrix' | 'quality'>('editor');
+  const [currentPage, setCurrentPage] = useState<'editor' | 'price' | 'analysis' | 'matrix' | 'quality' | 'storage'>('editor');
   
   // --- Configuration State ---
   const [configurations, setConfigurations] = useState<{id: string, name: string}[]>([]);
@@ -699,6 +700,13 @@ const App: React.FC = () => {
               >
                 Data Quality
               </button>
+              <button 
+                onClick={() => setCurrentPage('storage')} 
+                className={`${navButtonBaseClasses} ${currentPage === 'storage' ? navButtonActiveClasses : navButtonInactiveClasses}`}
+                aria-current={currentPage === 'storage' ? 'page' : undefined}
+              >
+                Storage Cycles
+              </button>
             </div>
           </nav>
         </div>
@@ -876,6 +884,14 @@ const App: React.FC = () => {
           externalQualityReport={loadQuality}
           externalMetaInfo={loadMeta}
         />
+      )}
+
+      {currentPage === 'storage' && (
+        <div className="p-4">
+          <StorageCyclesPage 
+            scheduleData={appState}
+          />
+        </div>
       )}
 
        <input

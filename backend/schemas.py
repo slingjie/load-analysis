@@ -59,3 +59,46 @@ class LoadAnalysisResponse(BaseModel):
     cleaned_points: List[CleanedPoint]
     report: QualityReport
     meta: MetaInfo
+
+
+# =========================
+# 储能次数测算 - 响应模型（MVP 占位）
+# =========================
+
+class StorageCyclesDay(BaseModel):
+    """日度结果（占位版）"""
+    date: str = Field(description="日期 YYYY-MM-DD")
+    cycles: float = Field(default=0.0, description="当日充放次数（占位）")
+
+
+class StorageCyclesMonth(BaseModel):
+    """月度结果（占位版）"""
+    year_month: str = Field(description="年月 YYYY-MM")
+    cycles: float = Field(default=0.0, description="当月合计次数（占位）")
+
+
+class StorageCyclesYear(BaseModel):
+    """年度结果（占位版）"""
+    year: int = Field(description="年份，如 2025；0 表示未知/占位")
+    cycles: float = Field(default=0.0, description="年度累计次数（占位）")
+
+
+class StorageQC(BaseModel):
+    """质量与提示指标（占位版）"""
+    notes: List[str] = Field(default_factory=list, description="提示或说明")
+    missing_prices: int = Field(default=0, description="缺价点位计数（占位）")
+    missing_points: int = Field(default=0, description="缺失点位计数（占位）")
+    merged_segments: int = Field(default=0, description="策略合并次数（占位）")
+    # 计费上限信息（任务3）
+    limit_mode: Optional[str] = Field(default=None, description="计费上限口径：monthly_demand_max 或 transformer_capacity")
+    transformer_limit_kw: Optional[float] = Field(default=None, description="变压器口径的上限功率（kW）")
+    monthly_demand_max: List[dict] = Field(default_factory=list, description="每月最大需量统计：[{year_month, max_kw}]")
+
+
+class StorageCyclesResponse(BaseModel):
+    """储能充放次数测算响应（MVP 占位）"""
+    year: StorageCyclesYear
+    months: List[StorageCyclesMonth] = Field(default_factory=list)
+    days: List[StorageCyclesDay] = Field(default_factory=list)
+    qc: StorageQC = Field(default_factory=StorageQC)
+    excel_path: Optional[str] = Field(default=None, description="报表路径（占位）")
