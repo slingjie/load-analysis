@@ -906,14 +906,13 @@ const App: React.FC = () => {
         />
       )}
 
-      {currentPage === 'storage' && (
-        <div className="p-4">
-          <StorageCyclesPage 
-            scheduleData={appState}
-            externalCleanedData={loadCleanedData}
-          />
-        </div>
-      )}
+      {/* Storage Cycles 页面保持挂载，避免切换时状态重置 */}
+      <div className={currentPage === 'storage' ? 'p-4' : 'p-4 hidden'}>
+        <StorageCyclesPage 
+          scheduleData={appState}
+          externalCleanedData={loadCleanedData}
+        />
+      </div>
 
        <input
             type="file"
