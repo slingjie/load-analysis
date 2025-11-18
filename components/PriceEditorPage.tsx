@@ -61,16 +61,54 @@ export const PriceEditorPage: React.FC<PriceEditorPageProps> = ({ scheduleData, 
     '尖': 'rgba(248, 113, 113, 0.18)', // 半透明红
   }), []);
 
-  // 计算每个月实际使用到的 TOU 档位集合（基于“月度默认规则”）
+  // 计算每个月实际使用到的 TOU 档位集合（综合“月度默认规则”+“日期规则”）
   const usedTiersByMonth = useMemo(() => {
-    return monthlySchedule.map((month) => {
+    // 先基于月度默认规则收集
+    const monthSets: Array<Set<TierId>> = monthlySchedule.map((month) => {
       const s = new Set<TierId>();
       month.forEach(c => s.add(c.tou as TierId));
       return s;
     });
-  }, [monthlySchedule]);
 
-  // 规范化：清空当月未使用的 TOU 档的电价，避免产生“无尖却有尖价”的困惑
+    // 再叠加日期规则：将规则使用到的 TOU 档位分配到其覆盖到的“月份（按月份编号 0..11，不区分年份）”
+    const expandMonthsInRange = (startDate: string, endDate: string): number[] => {
+      // 简化：按“月份编号”展开，不按年份区分
+      const s = new Date(`${startDate}T00:00:00`);
+      const e = new Date(`${endDate}T00:00:00`);
+      // 从起始月份到结束月份逐月推进
+      const res: number[] = [];
+      let cur = new Date(s.getFullYear(), s.getMonth(), 1);
+      const last = new Date(e.getFullYear(), e.getMonth(), 1);
+      while (cur.getTime() <= last.getTime()) {
+        res.push(cur.getMonth());
+        cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+      }
+      return Array.from(new Set(res));
+    };
+
+    const tiersOfRule = (ruleSchedule: any[]): Set<TierId> => {
+      const s = new Set<TierId>();
+      (ruleSchedule || []).forEach(cell => {
+        const tou = (cell?.tou as TierId) || null;
+        if (tou) s.add(tou);
+      });
+      return s;
+    };
+
+    (dateRules || []).forEach(rule => {
+      try {
+        const months = expandMonthsInRange(rule.startDate, rule.endDate);
+        const ts = tiersOfRule(rule.schedule);
+        months.forEach(m => {
+          ts.forEach(t => monthSets[m].add(t));
+        });
+      } catch { /* ignore bad rule */ }
+    });
+
+    return monthSets;
+  }, [monthlySchedule, dateRules]);
+
+  // 规范化：清空当月未使用的 TOU 档的电价（综合月度+日期规则），避免“无尖却有尖价”的困惑
   useEffect(() => {
     const next = prices.map((pm, i) => {
       const used = usedTiersByMonth[i];
@@ -92,6 +130,51 @@ export const PriceEditorPage: React.FC<PriceEditorPageProps> = ({ scheduleData, 
   // 批量应用：勾选月份 + 价格模板
   const [selectedMonths, setSelectedMonths] = useState<Set<number>>(new Set());
   const [batchPrice, setBatchPrice] = useState<PriceMap>({ '深': null, '谷': 0.3000, '平': 0.6000, '峰': 0.9000, '尖': null });
+
+  // 缺价扫描与一键补齐（按中位数）
+  const TIER_ORDER: TierId[] = useMemo(() => ['深','谷','平','峰','尖'], []);
+  const missingStat = useMemo(() => {
+    const details = prices.map((pm, i) => {
+      const used = usedTiersByMonth[i];
+      const missingTiers = TIER_ORDER.filter(t => used.has(t) && (pm[t] === null || !Number.isFinite(Number(pm[t]))));
+      return { monthIndex: i, missingTiers };
+    });
+    const totalMissing = details.reduce((acc, d) => acc + d.missingTiers.length, 0);
+    const monthsWithMissing = details.filter(d => d.missingTiers.length > 0).map(d => d.monthIndex);
+    return { totalMissing, details, monthsWithMissing };
+  }, [prices, usedTiersByMonth, TIER_ORDER]);
+
+  const fillMissingByMedian = () => {
+    // 计算每个档位的中位数（仅统计被使用的且为有效数值的项）
+    const medians: Partial<Record<TierId, number>> = {};
+    TIER_ORDER.forEach(t => {
+      const values: number[] = [];
+      for (let i = 0; i < 12; i++) {
+        if (usedTiersByMonth[i].has(t)) {
+          const v = prices[i][t];
+          if (typeof v === 'number' && Number.isFinite(v)) values.push(v);
+        }
+      }
+      if (values.length > 0) {
+        const arr = values.slice().sort((a,b) => a - b);
+        const mid = Math.floor(arr.length / 2);
+        medians[t] = arr.length % 2 === 0 ? (arr[mid - 1] + arr[mid]) / 2 : arr[mid];
+      }
+    });
+    const next = prices.map((pm, i) => {
+      const used = usedTiersByMonth[i];
+      const p: PriceMap = { ...pm } as any;
+      TIER_ORDER.forEach(t => {
+        const cur = p[t];
+        const needFill = used.has(t) && (cur === null || !Number.isFinite(Number(cur)));
+        if (needFill && medians[t] != null) {
+          p[t] = Number((medians[t] as number).toFixed(4));
+        }
+      });
+      return p;
+    }) as MonthlyTouPrices;
+    onChange(next);
+  };
 
   const seriesData = useMemo(() => {
     const monthIdx = Math.min(Math.max(viewIndex, 0), 11);
@@ -143,6 +226,39 @@ export const PriceEditorPage: React.FC<PriceEditorPageProps> = ({ scheduleData, 
 
   return (
     <div className="space-y-6">
+      {/* 缺价扫描与补齐 */}
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <span className="font-medium">电价缺失扫描：</span>
+            <span>共缺失 {missingStat.totalMissing} 项</span>
+            {missingStat.monthsWithMissing.length > 0 && (
+              <span className="ml-2">
+                涉及月份：{missingStat.monthsWithMissing.map(m => MONTHS[m]).join('、')}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded"
+              onClick={fillMissingByMedian}
+              disabled={missingStat.totalMissing === 0}
+              title="将所有缺失的档位价格按同档位的年度中位数进行补齐"
+            >
+              一键补齐（按中位数）
+            </button>
+          </div>
+        </div>
+        {missingStat.details.some(d => d.missingTiers.length > 0) && (
+          <ul className="mt-2 list-disc ml-5">
+            {missingStat.details.filter(d => d.missingTiers.length > 0).map(d => (
+              <li key={d.monthIndex}>
+                {MONTHS[d.monthIndex]} 缺失：{d.missingTiers.join('、')}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
       {/* 月份电价表 */}
       <div id="section-price-table" className="scroll-mt-24 bg-white rounded-xl shadow-lg p-4">
         <h2 className="text-xl font-bold text-slate-800 mb-3">分时电价编辑（元/kWh）</h2>

@@ -10,13 +10,15 @@ from __future__ import annotations
 
 from datetime import timedelta, datetime
 import logging
-from typing import Tuple, Optional, Dict, List
+from typing import Tuple, Optional, Dict, List, Any
 
 import pandas as pd
 import os
 from pathlib import Path
 
 from . import loader
+
+TZ_NAME = os.environ.get("APP_LOCAL_TZ", "Asia/Shanghai")
 
 
 logger = logging.getLogger("load-analysis")
@@ -46,7 +48,17 @@ def parse_load_series(file_bytes: bytes) -> pd.DataFrame:
         raise CyclesError("未找到负荷列（load 或 load_kw）。")
 
     df = raw[["timestamp", load_col]].copy()
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    # 统一将带时区的时间戳转换为“本地朴素时间”，与排程的本地日界一致
+    ts = pd.to_datetime(df["timestamp"], errors="coerce")
+    try:
+        if getattr(ts.dt, "tz", None) is not None:
+            ts = ts.dt.tz_convert(TZ_NAME).dt.tz_localize(None)
+    except Exception:
+        try:
+            ts = ts.dt.tz_localize(None)
+        except Exception:
+            pass
+    df["timestamp"] = ts
     df = df.dropna(subset=["timestamp"]).reset_index(drop=True)
     df.rename(columns={load_col: "load_kw"}, inplace=True)
     df["load_kw"] = pd.to_numeric(df["load_kw"], errors="coerce")
@@ -60,6 +72,38 @@ def parse_load_series(file_bytes: bytes) -> pd.DataFrame:
 
     # 返回标准化结构
     return resampled[["load_kw"]]
+
+
+def parse_points_series(points: List[Dict[str, Any]]) -> pd.DataFrame:
+    """将前端已分析的点数组（timestamp, load_kwh）转换为 15 分钟序列。
+
+    参数:
+      points: [{"timestamp": ISO8601字符串, "load_kwh": 数值}, ...]
+    返回:
+      索引为 DatetimeIndex 的 DataFrame，列为 load_kw，重采样至 15min 平均。
+    """
+    if not points:
+        return pd.DataFrame(index=pd.to_datetime([]), data={"load_kw": []})
+    df = pd.DataFrame(points)
+    # 兼容键名 load 与 load_kwh
+    if "load_kwh" not in df.columns and "load" in df.columns:
+        df = df.rename(columns={"load": "load_kwh"})
+    # 统一将带时区的时间戳转换为“本地朴素时间”，与排程的本地日界一致
+    ts = pd.to_datetime(df["timestamp"], errors="coerce")
+    try:
+        if getattr(ts.dt, "tz", None) is not None:
+            ts = ts.dt.tz_convert(TZ_NAME).dt.tz_localize(None)
+    except Exception:
+        try:
+            ts = ts.dt.tz_localize(None)
+        except Exception:
+            pass
+    df["timestamp"] = ts
+    df["load_kwh"] = pd.to_numeric(df["load_kwh"], errors="coerce")
+    df = df.dropna(subset=["timestamp"]).sort_values("timestamp").set_index("timestamp")
+    df = df[~df.index.duplicated(keep="first")]
+    resampled = df.resample("15min").mean()
+    return resampled.rename(columns={"load_kwh": "load_kw"})[["load_kw"]]
 
 
 def compute_limit_info(
@@ -724,7 +768,7 @@ def export_excel_report(
     window_debug: List[dict] | None = None,
     ops_by_hour: List[dict] | None = None,
     runs_debug: List[dict] | None = None,
-) -> Path:
+) -> tuple[Path, Path | None]:
     """导出 Excel 报表（单文件多 Sheet）。
 
     - Sheet1: results（日、月、年）
@@ -735,6 +779,7 @@ def export_excel_report(
     out_dir.mkdir(parents=True, exist_ok=True)
     base = os.path.splitext(os.path.basename(source_filename))[0] or "result"
     xlsx = out_dir / f"{base}_计算结果.xlsx"
+    summary_csv: Path | None = None
 
     # 构造 DataFrame
     df_days = pd.DataFrame(days)
@@ -767,6 +812,32 @@ def export_excel_report(
         monthly_limit.to_excel(writer, index=False, sheet_name="qc", startrow=startrow)
         startrow += len(monthly_limit) + 2
         qc_notes.to_excel(writer, index=False, sheet_name="qc", startrow=startrow)
+
+        # Summary（关键统计一页表）
+        try:
+            cy_m = pd.to_numeric(df_months.get("cycles"), errors="coerce") if not df_months.empty else pd.Series([], dtype=float)
+            cy_d = pd.to_numeric(df_days.get("cycles"), errors="coerce") if not df_days.empty else pd.Series([], dtype=float)
+            months_sum = float(cy_m.fillna(0).sum()) if not df_months.empty else 0.0
+            months_nonzero = int((cy_m > 0).sum()) if not df_months.empty else 0
+            months_total = int(len(df_months)) if not df_months.empty else 0
+            days_nonzero = int((cy_d > 0).sum()) if not df_days.empty else 0
+            days_total = int(len(df_days)) if not df_days.empty else 0
+
+            summary_df = pd.DataFrame([{
+                "year_cycles": float(pd.to_numeric(pd.Series([year.get("cycles", 0)]), errors="coerce").fillna(0).iloc[0]) if isinstance(year, dict) else 0.0,
+                "months_sum_cycles": months_sum,
+                "months_nonzero": months_nonzero,
+                "months_total": months_total,
+                "days_nonzero": days_nonzero,
+                "days_total": days_total,
+                "missing_prices": int(qc_dict.get("missing_prices", 0) or 0),
+                "merged_segments": int(qc_dict.get("merged_segments", 0) or 0),
+                "limit_mode": limit_info.get("limit_mode"),
+                "transformer_limit_kw": limit_info.get("transformer_limit_kw"),
+            }])
+            summary_df.to_excel(writer, index=False, sheet_name="summary")
+        except Exception:
+            pass
 
         # 窗口汇总明细（可选）
         if window_debug:
@@ -815,4 +886,14 @@ def export_excel_report(
             df_runs = df_runs[cols_runs]
             df_runs.to_excel(writer, index=False, sheet_name="runs_debug")
 
-    return xlsx
+    # 生成 CSV 简表
+    try:
+        summary_csv = out_dir / f"{base}_summary.csv"
+        if 'summary_df' in locals():
+            summary_df.to_csv(summary_csv, index=False, encoding="utf-8-sig")
+        else:
+            pd.DataFrame([year]).to_csv(summary_csv, index=False, encoding="utf-8-sig")
+    except Exception:
+        summary_csv = None
+
+    return xlsx, summary_csv

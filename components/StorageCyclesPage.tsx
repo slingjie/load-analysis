@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { MonthlyTouPrices, Schedule, DateRule, BackendStorageCyclesResponse } from '../types';
+import type { LoadDataPoint } from '../utils';
 import { computeStorageCycles, type StorageParamsPayload } from '../storageApi';
 
 interface Props {
@@ -8,14 +9,33 @@ interface Props {
     dateRules: DateRule[];
     prices: MonthlyTouPrices;
   };
+  externalCleanedData?: LoadDataPoint[] | null; // 来自“负荷分析”页的已上传点
 }
 
-export const StorageCyclesPage: React.FC<Props> = ({ scheduleData }) => {
+export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalCleanedData }) => {
   const fileRef = useRef<HTMLInputElement>(null);
   const [fileName, setFileName] = useState<string>('');
+  const [useAnalyzedData, setUseAnalyzedData] = useState<boolean>(!!(externalCleanedData && externalCleanedData.length > 0));
+
+  // 当负荷分析数据变化时自动勾选/取消
+  React.useEffect(() => {
+    setUseAnalyzedData(!!(externalCleanedData && externalCleanedData.length > 0));
+  }, [externalCleanedData]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BackendStorageCyclesResponse | null>(null);
+
+  // 将 Date 转为“本地朴素时间”字符串（YYYY-MM-DD HH:mm:ss），避免 UTC 偏移与日界错位
+  const toLocalNaiveString = (d: Date) => {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const y = d.getFullYear();
+    const m = pad(d.getMonth() + 1);
+    const day = pad(d.getDate());
+    const hh = pad(d.getHours());
+    const mm = pad(d.getMinutes());
+    const ss = pad(d.getSeconds());
+    return `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
+  };
 
   // 简化的默认参数（可在页面上编辑的表单项可后续补充）
   const [params, setParams] = useState({
@@ -51,12 +71,32 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData }) => {
     setError(null);
     setResult(null);
     const input = fileRef.current;
-    if (!input || !input.files || input.files.length === 0) {
-      setError('请选择待测算的负荷文件（CSV/XLSX）');
+    let file: File | null = null;
+    if (input && input.files && input.files.length > 0) {
+      file = input.files[0];
+      setFileName(file.name);
+    }
+    if (!file && !useAnalyzedData) {
+      setError('请选择待测算的负荷文件（CSV/XLSX）或勾选“使用负荷分析已上传数据”');
       return;
     }
-    const file = input.files[0];
-    setFileName(file.name);
+
+    // 勾选了复用但没有可用数据，直接提示并中止
+    if (useAnalyzedData && (!externalCleanedData || externalCleanedData.length === 0)) {
+      setError('“负荷分析”页没有可用数据，请先在“负荷分析”页上传并处理，或在本页选择负荷文件。');
+      return;
+    }
+
+    // 仅在有有效数据时构造 points，并按时间排序
+    const pointsPayload = (useAnalyzedData && externalCleanedData && externalCleanedData.length > 0)
+      ? externalCleanedData
+          .slice()
+          .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+          .map(p => ({
+            timestamp: toLocalNaiveString(p.timestamp),
+            load_kwh: Number(p.load),
+          }))
+      : undefined;
 
     const payload: StorageParamsPayload = {
       storage: {
@@ -78,6 +118,7 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData }) => {
         dateRules: scheduleData.dateRules,
       },
       monthlyTouPrices: scheduleData.prices,
+      points: pointsPayload,
     };
 
     try {
@@ -169,6 +210,13 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData }) => {
         <button className="ml-2 px-3 py-1.5 rounded bg-green-600 text-white text-sm" onClick={handleUpload} disabled={loading}>
           {loading ? '计算中…' : '开始测算'}
         </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+        <label className="flex items-center gap-2">
+          <input type="checkbox" checked={useAnalyzedData} onChange={e => setUseAnalyzedData(e.target.checked)} />
+          <span>使用“负荷分析”页已上传数据</span>
+        </label>
       </div>
 
       {/* 参数表单（简化） */}

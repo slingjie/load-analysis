@@ -559,6 +559,26 @@ const App: React.FC = () => {
                       const TIERS: TierId[] = ['深','谷','平','峰','尖'];
                       for (let i = 0; i < 12; i++) {
                         const used = new Set<TierId>(newMonthlySchedule[i].map(c => c.tou as TierId));
+                        // merge tiers used in date rules that cover month i (ignore year)
+                        (newDateRules || []).forEach(rule => {
+                          try {
+                            const sDate = new Date(`${rule.startDate}T00:00:00`);
+                            const eDate = new Date(`${rule.endDate}T00:00:00`);
+                            let cur = new Date(sDate.getFullYear(), sDate.getMonth(), 1);
+                            const last = new Date(eDate.getFullYear(), eDate.getMonth(), 1);
+                            while (cur.getTime() <= last.getTime()) {
+                              const mi = cur.getMonth();
+                              if (mi === i) {
+                                (rule.schedule as any[] || []).forEach(cell => {
+                                  const tou = (cell?.tou as TierId) || null;
+                                  if (tou) used.add(tou);
+                                });
+                                break;
+                              }
+                              cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+                            }
+                          } catch { /* ignore bad rule */ }
+                        });
                         TIERS.forEach(t => {
                           if (!used.has(t)) (newPrices as any)[i][t] = null;
                         });
@@ -890,6 +910,7 @@ const App: React.FC = () => {
         <div className="p-4">
           <StorageCyclesPage 
             scheduleData={appState}
+            externalCleanedData={loadCleanedData}
           />
         </div>
       )}

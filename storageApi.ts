@@ -26,14 +26,17 @@ export interface StorageParamsPayload {
     dateRules: any[];       // 复用现有结构
   };
   monthlyTouPrices: MonthlyTouPrices;
+  // 可选：直接复用“负荷分析”页面上传后的点数组（程序互通）
+  // 若提供 points，可不传 file；后端将优先使用 points。
+  points?: { timestamp: string; load_kwh: number }[];
 }
 
 export const computeStorageCycles = async (
-  file: File,
+  file: File | null,
   payload: StorageParamsPayload,
 ): Promise<BackendStorageCyclesResponse> => {
   const formData = new FormData();
-  formData.append('file', file);
+  if (file) formData.append('file', file);
   formData.append('payload', JSON.stringify(payload));
 
   const url = `${BASE_URL}/api/storage/cycles`;
@@ -73,4 +76,3 @@ export const computeStorageCycles = async (
 
   return result as BackendStorageCyclesResponse;
 };
-

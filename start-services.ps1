@@ -83,14 +83,20 @@ if (-not $NoReload) {
     $backendArgs += "--reload"
 }
 
-# 使用 Start-Process 在后台启动后端
+# 创建日志文件
+$logFile = "backend.log"
+
+# 使用 Start-Process 在后台启动后端,重定向输出
 $backendProcess = Start-Process `
     -FilePath "python.exe" `
     -ArgumentList $backendArgs `
     -PassThru `
-    -NoNewWindow
+    -WindowStyle Hidden `
+    -RedirectStandardOutput $logFile `
+    -RedirectStandardError "backend.error.log"
 
 Write-Host "✅ 后端已启动 (PID: $($backendProcess.Id))"
+Write-Host "   日志文件: $logFile"
 Write-Host ""
 
 # 等待后端启动
@@ -99,27 +105,37 @@ Start-Sleep -Seconds 3
 
 # 检查后端是否正常
 try {
-    $response = curl -s "http://localhost:$BackendPort/health" -ErrorAction SilentlyContinue
-    if ($response -match "ok") {
+    $response = Invoke-WebRequest -Uri "http://localhost:$BackendPort/health" -UseBasicParsing -ErrorAction SilentlyContinue
+    if ($response.StatusCode -eq 200) {
         Write-Host "✅ 后端服务正常 (/health: OK)" -ForegroundColor Green
     } else {
-        Write-Host "⚠️  后端未准备好，请查看下面的日志" -ForegroundColor Yellow
+        Write-Host "⚠️  后端未准备好,查看日志: tail -f $logFile" -ForegroundColor Yellow
     }
 }
 catch {
-    Write-Host "⚠️  无法连接后端，请查看下面的日志" -ForegroundColor Yellow
+    Write-Host "⚠️  无法连接后端,查看日志: tail -f $logFile" -ForegroundColor Yellow
 }
 
 Write-Host ""
 Write-Host "🚀 启动前端开发服务器..." -ForegroundColor Green
 Write-Host "   URL: http://localhost:$FrontendPort" -ForegroundColor Cyan
+Write-Host "   提示: Ctrl+C 将同时停止前后端服务" -ForegroundColor Yellow
 Write-Host ""
 
-# 启动前端（在当前窗口）
-npm run dev
+# 注册退出清理
+$cleanup = {
+    Write-Host ""
+    Write-Host "🛑 清理资源..." -ForegroundColor Yellow
+    Get-Process -Id $backendProcess.Id -ErrorAction SilentlyContinue | Stop-Process -Force
+    Write-Host "✅ 已停止后端服务"
+}
+Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action $cleanup | Out-Null
 
-# 清理后端进程
-Write-Host ""
-Write-Host "🛑 清理资源..." -ForegroundColor Yellow
-Stop-Process -Id $backendProcess.Id -Force -ErrorAction SilentlyContinue
-Write-Host "✅ 已停止后端服务"
+try {
+    # 启动前端（在当前窗口）
+    npm run dev
+}
+finally {
+    # 清理后端进程
+    & $cleanup
+}
