@@ -134,10 +134,21 @@ export interface BackendStorageQC {
   monthly_demand_max: { year_month: string; max_kw: number }[];
 }
 
+// Window_debug �月度汇总（按 C1/C2 + charge/discharge 拆分）
+export interface BackendStorageWindowMonthSummary {
+  year_month: string;                // YYYY-MM
+  first_charge_cycles: number;       // C1 + charge 等效满循环次数之和
+  first_discharge_cycles: number;    // C1 + discharge 等效满循环次数之和
+  second_charge_cycles: number;      // C2 + charge 等效满循环次数之和
+  second_discharge_cycles: number;   // C2 + discharge 等效满循环次数之和
+}
+
 export interface BackendStorageCyclesResponse {
   year: BackendStorageCyclesYear;
   months: BackendStorageCyclesMonth[];
   days: BackendStorageCyclesDay[];
   qc: BackendStorageQC;
   excel_path: string | null;
+  // 可选：后端按 Window_debug 聚合好的月度拆分结果
+  window_month_summary?: BackendStorageWindowMonthSummary[];
 }

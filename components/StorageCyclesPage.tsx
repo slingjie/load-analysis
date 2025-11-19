@@ -17,6 +17,19 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
   const [fileName, setFileName] = useState<string>('');
   const [useAnalyzedData, setUseAnalyzedData] = useState<boolean>(!!(externalCleanedData && externalCleanedData.length > 0));
 
+  // �Ƿ��Ѵ����ɷ������ݣ����ڽ���ͳ�ƣ�
+  const hasExternalData = !!(externalCleanedData && externalCleanedData.length > 0);
+  const reusedStats = useMemo(() => {
+    if (!externalCleanedData || !externalCleanedData.length) return null;
+    const sorted = externalCleanedData
+      .slice()
+      .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    const count = sorted.length;
+    const start = sorted[0]?.timestamp;
+    const end = sorted[sorted.length - 1]?.timestamp;
+    return { count, start, end };
+  }, [externalCleanedData]);
+
   // 当负荷分析数据变化时自动勾选/取消
   React.useEffect(() => {
     setUseAnalyzedData(!!(externalCleanedData && externalCleanedData.length > 0));
@@ -137,10 +150,176 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
   // ========== 图表渲染（ECharts 动态加载） ==========
   const monthChartRef = useRef<HTMLDivElement>(null);
   const dayChartRef = useRef<HTMLDivElement>(null);
+  const heatmapChartRef = useRef<HTMLDivElement>(null);
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
+  const [monthlyViewMode, setMonthlyViewMode] = useState<'aggregate' | 'byYear'>('aggregate');
 
   const monthsData = useMemo(() => result?.months || [], [result]);
   const daysData = useMemo(() => result?.days || [], [result]);
+
+  // 月度曲线：按“月份维度”聚合不同年份（同一月份的 cycles 求和）
+  const monthAxisLabels = useMemo(
+    () => Array.from({ length: 12 }, (_, i) => `${i + 1}月`),
+    [],
+  );
+
+  const aggregatedMonthlyCycles = useMemo(() => {
+    const sums = new Array(12).fill(0);
+    const hasData = new Array(12).fill(false);
+    monthsData.forEach((m: any) => {
+      if (!m?.year_month) return;
+      const parts = String(m.year_month).split('-');
+      if (parts.length !== 2) return;
+      const month = parseInt(parts[1], 10);
+      if (!month || month < 1 || month > 12) return;
+      const idx = month - 1;
+      sums[idx] += Number(m.cycles ?? 0);
+      hasData[idx] = true;
+    });
+    // 对于完全没有数据的月份返回 null，使折线在该点断开
+    return sums.map((v, idx) => (hasData[idx] ? v : null));
+  }, [monthsData]);
+
+  // 热力图维度：横轴为 1–31 日，纵轴为 1–12 月
+  const heatmapXAxisDays = useMemo(
+    () => Array.from({ length: 31 }, (_, i) => String(i + 1).padStart(2, '0')),
+    [],
+  );
+  const heatmapYAxisMonths = useMemo(
+    () => Array.from({ length: 12 }, (_, i) => `${i + 1}月`),
+    [],
+  );
+
+  // 将日度数据转换为 12×31 的热力图矩阵
+  const heatmapData = useMemo(() => {
+    if (!daysData.length) return [] as number[][];
+    const valueMap = new Map<string, number>();
+    daysData.forEach((d: any) => {
+      if (!d?.date) return;
+      const parts = String(d.date).split('-');
+      if (parts.length !== 3) return;
+      const m = parseInt(parts[1], 10);
+      const day = parseInt(parts[2], 10);
+      if (!m || !day) return;
+      const key = `${m}-${day}`;
+      valueMap.set(key, Number(d.cycles ?? 0));
+    });
+    const data: number[][] = [];
+    for (let m = 1; m <= 12; m++) {
+      for (let d = 1; d <= 31; d++) {
+        const v = valueMap.get(`${m}-${d}`) ?? 0;
+        // x: 第几日（0-based），y: 第几月（0-based）
+        data.push([d - 1, m - 1, v]);
+      }
+    }
+    return data;
+  }, [daysData]);
+
+  // 按天数据统计：每月有效天数 / 有效循环数 / 等效循环数 + 年度汇总
+  const {
+    monthValidDays,
+    monthTotalCycles,
+    monthEquivalentCycles,
+    yearValidDays,
+    yearTotalCycles,
+    yearEquivalentCycles,
+    monthFirstChargeRatePct,
+    monthFirstDischargeRatePct,
+    monthSecondChargeRatePct,
+    monthSecondDischargeRatePct,
+  } = useMemo(() => {
+    const monthDaySets: Array<Set<string>> = Array.from({ length: 12 }, () => new Set<string>());
+    const monthTotal: number[] = new Array(12).fill(0);
+    const monthYear: Array<number | null> = new Array(12).fill(null);
+    const yearDaySet = new Set<string>();
+
+    daysData.forEach((d: any) => {
+      if (!d?.date) return;
+      const parts = String(d.date).split('-');
+      if (parts.length !== 3) return;
+      const year = parseInt(parts[0], 10);
+      const month = parseInt(parts[1], 10);
+      if (!year || !month || month < 1 || month > 12) return;
+      const idx = month - 1;
+      const dateKey = String(d.date);
+      monthDaySets[idx].add(dateKey);
+      yearDaySet.add(dateKey);
+      monthTotal[idx] += Number(d.cycles ?? 0);
+      if (monthYear[idx] == null) {
+        monthYear[idx] = year;
+      }
+    });
+
+    const monthValidDaysArr: number[] = new Array(12).fill(0);
+    const monthEqCyclesArr: Array<number | null> = new Array(12).fill(null);
+
+    // 从后端 window_month_summary 中取 C1/C2 + charge/discharge 的月度循环数
+    const firstChargeCycles: number[] = new Array(12).fill(0);
+    const firstDischargeCycles: number[] = new Array(12).fill(0);
+    const secondChargeCycles: number[] = new Array(12).fill(0);
+    const secondDischargeCycles: number[] = new Array(12).fill(0);
+
+    (result?.window_month_summary ?? []).forEach((m: any) => {
+      if (!m?.year_month) return;
+      const parts = String(m.year_month).split('-');
+      if (parts.length !== 2) return;
+      const month = parseInt(parts[1], 10);
+      if (!month || month < 1 || month > 12) return;
+      const idx = month - 1;
+      firstChargeCycles[idx] += Number(m.first_charge_cycles ?? 0);
+      firstDischargeCycles[idx] += Number(m.first_discharge_cycles ?? 0);
+      secondChargeCycles[idx] += Number(m.second_charge_cycles ?? 0);
+      secondDischargeCycles[idx] += Number(m.second_discharge_cycles ?? 0);
+    });
+
+    const firstChargeRatePct: Array<number | null> = new Array(12).fill(null);
+    const firstDischargeRatePct: Array<number | null> = new Array(12).fill(null);
+    const secondChargeRatePct: Array<number | null> = new Array(12).fill(null);
+    const secondDischargeRatePct: Array<number | null> = new Array(12).fill(null);
+
+    for (let i = 0; i < 12; i++) {
+      const validDays = monthDaySets[i].size;
+      monthValidDaysArr[i] = validDays;
+      if (validDays > 0) {
+        const y = monthYear[i] ?? new Date().getFullYear();
+        // 计算该月自然天数（处理好 2 月闰年）
+        const monthDaysCount = new Date(y, i + 1, 0).getDate();
+        const total = monthTotal[i];
+        monthEqCyclesArr[i] = (total / validDays) * monthDaysCount;
+
+        // “满充率/满放率”= 日均次数 × 100%（单位 %）
+        const d = validDays;
+        const fCharge = firstChargeCycles[i];
+        const fDischarge = firstDischargeCycles[i];
+        const sCharge = secondChargeCycles[i];
+        const sDischarge = secondDischargeCycles[i];
+        firstChargeRatePct[i] = d > 0 ? (fCharge / d) * 100 : null;
+        firstDischargeRatePct[i] = d > 0 ? (fDischarge / d) * 100 : null;
+        secondChargeRatePct[i] = d > 0 ? (sCharge / d) * 100 : null;
+        secondDischargeRatePct[i] = d > 0 ? (sDischarge / d) * 100 : null;
+      }
+    }
+
+    const yearValidDaysCount = yearDaySet.size;
+    const yearTotalCyclesVal = monthTotal.reduce((sum, v) => sum + v, 0);
+    const yearEqCyclesVal = monthEqCyclesArr.reduce(
+      (sum, v) => (v != null ? sum + v : sum),
+      0,
+    );
+
+    return {
+      monthValidDays: monthValidDaysArr,
+      monthTotalCycles: monthTotal,
+      monthEquivalentCycles: monthEqCyclesArr,
+      yearValidDays: yearValidDaysCount,
+      yearTotalCycles: yearTotalCyclesVal,
+      yearEquivalentCycles: yearEqCyclesVal,
+      monthFirstChargeRatePct: firstChargeRatePct,
+      monthFirstDischargeRatePct: firstDischargeRatePct,
+      monthSecondChargeRatePct: secondChargeRatePct,
+      monthSecondDischargeRatePct: secondDischargeRatePct,
+    };
+  }, [daysData, result?.window_month_summary]);
 
   useEffect(() => {
     if (!monthsData.length) { setSelectedMonth(null); return; }
@@ -167,18 +346,57 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
     loadECharts().then((echarts: any) => {
       if (!monthChartRef.current) return;
       chart = echarts.init(monthChartRef.current);
-      const cats = monthsData.map(m => m.year_month);
-      const vals = monthsData.map(m => Number(m.cycles ?? 0));
+      const cats =
+        monthlyViewMode === 'aggregate'
+          ? monthAxisLabels
+          : monthsData.map(m => m.year_month);
+      const vals =
+        monthlyViewMode === 'aggregate'
+          ? aggregatedMonthlyCycles
+          : monthsData.map(m => Number(m.cycles ?? 0));
       chart.setOption({
-        tooltip: {},
-        xAxis: { type: 'category', data: cats },
-        yAxis: { type: 'value', name: 'cycles' },
-        series: [{ name: '月次数', type: 'bar', data: vals, itemStyle: { color: '#60a5fa' } }],
+        tooltip: {
+          trigger: 'axis',
+          formatter: (params: any) => {
+            const p = Array.isArray(params) ? params[0] : params;
+            const label = p.axisValue;
+            const value =
+              p.data == null || Number.isNaN(Number(p.data))
+                ? '-'
+                : Number(p.data).toFixed(3);
+            if (monthlyViewMode === 'aggregate') {
+              // 按月合计视图：月份 + 合计次数
+              return `${label}：合计 ${value} 次`;
+            }
+            // 按年拆分视图：直接显示对应 year_month 的次数
+            return `${label}：${value} 次`;
+          },
+        },
+        xAxis: { type: 'category', data: cats, name: '月份' },
+        yAxis: { type: 'value', name: '次数' },
+        toolbox: {
+          feature: {
+            saveAsImage: {
+              name: 'storage-cycles-monthly',
+            },
+          },
+          right: 10,
+          top: 10,
+        },
+        series: [{
+          name: '月度次数',
+          type: 'line',
+          data: vals,
+          smooth: true,
+          // 在“按月合计”模式下遇到 null 会断开；按年拆分模式下 monthsData 不会出现 null
+          areaStyle: { color: 'rgba(96,165,250,0.15)' },
+          itemStyle: { color: '#60a5fa' },
+        }],
         grid: { left: 40, right: 20, bottom: 40, top: 30 },
       });
     }).catch(() => {/* ignore */});
     return () => { try { chart && chart.dispose && chart.dispose(); } catch { /* ignore */ } };
-  }, [monthsData]);
+  }, [aggregatedMonthlyCycles, monthAxisLabels, monthsData, monthlyViewMode]);
 
   useEffect(() => {
     let chart: any = null;
@@ -189,15 +407,110 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
       const cats = days.map(d => d.date.slice(5));
       const vals = days.map(d => Number(d.cycles ?? 0));
       chart.setOption({
-        tooltip: {},
-        xAxis: { type: 'category', data: cats },
-        yAxis: { type: 'value', name: 'cycles' },
-        series: [{ name: '日次数', type: 'line', data: vals, smooth: true, itemStyle: { color: '#34d399' } }],
+        tooltip: {
+          trigger: 'axis',
+          formatter: (params: any) => {
+            const p = Array.isArray(params) ? params[0] : params;
+            const label = p.axisValue;
+            const value =
+              p.data == null || Number.isNaN(Number(p.data))
+                ? '-'
+                : Number(p.data).toFixed(3);
+            return `${label}：${value} 次`;
+          },
+        },
+        xAxis: { type: 'category', data: cats, name: '日期' },
+        yAxis: {
+          type: 'value',
+          name: '次数',
+          axisLabel: {
+            formatter: (value: number) =>
+              Number.isNaN(Number(value)) ? '-' : Number(value).toFixed(3),
+          },
+        },
+        toolbox: {
+          feature: {
+            saveAsImage: {
+              name: 'storage-cycles-daily',
+            },
+          },
+          right: 10,
+          top: 10,
+        },
+        series: [{ name: '日度次数', type: 'line', data: vals, smooth: true, itemStyle: { color: '#34d399' } }],
         grid: { left: 40, right: 20, bottom: 40, top: 30 },
       });
     }).catch(() => {/* ignore */});
     return () => { try { chart && chart.dispose && chart.dispose(); } catch { /* ignore */ } };
   }, [daysData, selectedMonth]);
+
+  // 全年每日充放次数热力图
+  useEffect(() => {
+    let chart: any = null;
+    loadECharts().then((echarts: any) => {
+      if (!heatmapChartRef.current) return;
+      chart = echarts.init(heatmapChartRef.current);
+      const maxVal = heatmapData.reduce((max, d) => (d[2] > max ? d[2] : max), 0) || 1;
+      chart.setOption({
+        tooltip: {
+          position: 'top',
+          formatter: (params: any) => {
+            const xIdx = params.data[0];
+            const yIdx = params.data[1];
+            const v = params.data[2];
+            const dayLabel = heatmapXAxisDays[xIdx] ?? '';
+            const monthLabel = heatmapYAxisMonths[yIdx] ?? '';
+            const value =
+              v == null || Number.isNaN(Number(v))
+                ? '-'
+                : Number(v).toFixed(3);
+            return `${monthLabel}${dayLabel}日<br/>充放次数：${value}`;
+          },
+        },
+        grid: { left: 60, right: 40, top: 40, bottom: 40 },
+        xAxis: {
+          type: 'category',
+          data: heatmapXAxisDays,
+          name: '日',
+          splitArea: { show: true },
+        },
+        yAxis: {
+          type: 'category',
+          data: heatmapYAxisMonths,
+          name: '月',
+          // 反向显示，使 1 月在上方、12 月在下方
+          inverse: true,
+          splitArea: { show: true },
+        },
+        toolbox: {
+          feature: {
+            saveAsImage: {
+              name: 'storage-cycles-heatmap',
+            },
+          },
+          right: 10,
+          top: 10,
+        },
+        visualMap: {
+          min: 0,
+          max: maxVal,
+          calculable: true,
+          orient: 'vertical',
+          right: 0,
+          top: 'middle',
+          inRange: {
+            color: ['#e0f2fe', '#60a5fa', '#1d4ed8'],
+          },
+        },
+        series: [{
+          name: '每日充放次数',
+          type: 'heatmap',
+          data: heatmapData,
+        }],
+      });
+    }).catch(() => {/* ignore */});
+    return () => { try { chart && chart.dispose && chart.dispose(); } catch { /* ignore */ } };
+  }, [heatmapData, heatmapXAxisDays, heatmapYAxisMonths]);
 
   return (
     <div className="space-y-4">
@@ -291,48 +604,208 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
       {error && <div className="text-red-600 text-sm">{error}</div>}
 
       {result && (
-        <div className="mt-2 p-3 border rounded bg-white">
-          <div className="text-sm text-slate-700">年累计循环数：<b>{result.year?.cycles?.toFixed?.(6) ?? result.year?.cycles}</b></div>
-          <div className="text-sm text-slate-700 mt-1">月度结果（前 6 项预览）：
-            <ul className="list-disc ml-5">
-              {result.months.slice(0, 6).map((m) => (
-                <li key={m.year_month}>{m.year_month}: {m.cycles.toFixed?.(6) ?? m.cycles}</li>
-              ))}
-            </ul>
-          </div>
-          {/* 图表区：月柱 + 日折线 */}
-          <div className="mt-3 grid grid-cols-1 gap-4">
-            <div>
-              <div className="text-sm font-semibold mb-1">月度次数（bar）</div>
-              <div ref={monthChartRef} style={{ width: '100%', height: 280 }} />
+        <div className="mt-2 space-y-3">
+          {/* 循环有效/等效统计表格（按月 + 年度汇总） */}
+          <div className="p-3 border rounded-xl bg-white shadow-sm overflow-x-auto">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-sm font-semibold text-slate-800">
+                循环有效/等效统计（按月）
+              </div>
+              <div className="text-[11px] md:text-xs text-slate-500">
+                基于日度循环结果按自然月折算
+              </div>
             </div>
-            <div>
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold mb-1">日度次数（line）</div>
-                <div className="text-xs flex items-center gap-1">
-                  <span>月份</span>
-                  <select className="border rounded px-2 py-0.5" value={selectedMonth || ''}
-                    onChange={e => setSelectedMonth(e.target.value)}>
-                    {monthsData.map(m => (<option key={m.year_month} value={m.year_month}>{m.year_month}</option>))}
-                  </select>
+            <table className="min-w-full text-xs md:text-sm border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200">
+                  <th className="px-3 py-2 text-left font-medium text-slate-600">月份</th>
+                  <th className="px-3 py-2 text-right font-medium text-slate-600">有效天数（天）</th>
+                  <th className="px-3 py-2 text-right font-medium text-slate-600">平均日循环数（次/天）</th>
+                  <th className="px-3 py-2 text-right font-medium text-slate-600">有效循环数（次）</th>
+                  <th className="px-3 py-2 text-right font-medium text-slate-600">等效循环数（次）</th>
+                  <th className="px-3 py-2 text-right font-medium text-slate-600">第一次充电满充率（%）</th>
+                  <th className="px-3 py-2 text-right font-medium text-slate-600">第一次充电满放率（%）</th>
+                  <th className="px-3 py-2 text-right font-medium text-slate-600">第二次充电满充率（%）</th>
+                  <th className="px-3 py-2 text-right font-medium text-slate-600">第二次充电满放率（%）</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Array.from({ length: 12 }, (_, i) => {
+                  const monthLabel = `${i + 1}月`;
+                  const validDays = monthValidDays[i] ?? 0;
+                  const totalCycles = monthTotalCycles[i] ?? 0;
+                  const eqCycles = monthEquivalentCycles[i];
+                  const fChargePct = monthFirstChargeRatePct[i];
+                  const fDischargePct = monthFirstDischargeRatePct[i];
+                  const sChargePct = monthSecondChargeRatePct[i];
+                  const sDischargePct = monthSecondDischargeRatePct[i];
+                  const avgDailyCycles =
+                    validDays > 0 ? totalCycles / validDays : null;
+                  const totalStr =
+                    totalCycles === 0
+                      ? '-'
+                      : Number(totalCycles).toFixed(3);
+                  const eqStr =
+                    eqCycles == null || eqCycles === 0
+                      ? '-'
+                      : Number(eqCycles).toFixed(3);
+                  const fChargeStr =
+                    fChargePct == null
+                      ? '-'
+                      : `${Number(fChargePct).toFixed(3)}%`;
+                  const fDischargeStr =
+                    fDischargePct == null
+                      ? '-'
+                      : `${Number(fDischargePct).toFixed(3)}%`;
+                  const sChargeStr =
+                    sChargePct == null
+                      ? '-'
+                      : `${Number(sChargePct).toFixed(3)}%`;
+                  const sDischargeStr =
+                    sDischargePct == null
+                      ? '-'
+                      : `${Number(sDischargePct).toFixed(3)}%`;
+                  const avgDailyStr =
+                    avgDailyCycles == null || avgDailyCycles === 0
+                      ? '-'
+                      : Number(avgDailyCycles).toFixed(3);
+                  return (
+                    <tr
+                      key={monthLabel}
+                      className="border-b border-slate-100 last:border-0 even:bg-slate-50/60 hover:bg-slate-100/70 transition-colors"
+                    >
+                      <td className="px-3 py-1.5 text-slate-700">{monthLabel}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
+                        {validDays || '-'}
+                      </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
+                        {avgDailyStr}
+                      </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
+                        {totalStr}
+                      </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
+                        {eqStr}
+                      </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
+                        {fChargeStr}
+                      </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
+                        {fDischargeStr}
+                      </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
+                        {sChargeStr}
+                      </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
+                        {sDischargeStr}
+                      </td>
+                    </tr>
+                  );
+                })}
+                <tr className="border-t border-slate-200 bg-slate-100/80">
+                  <td className="px-3 py-1.5 font-semibold text-slate-800">全年合计</td>
+                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
+                    {yearValidDays || '-'}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
+                    {yearValidDays && yearTotalCycles
+                      ? Number(yearTotalCycles / yearValidDays).toFixed(3)
+                      : '-'}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
+                    {yearTotalCycles === 0
+                      ? '-'
+                      : Number(yearTotalCycles).toFixed(3)}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
+                    {yearEquivalentCycles === 0
+                      ? '-'
+                      : Number(yearEquivalentCycles).toFixed(3)}
+                  </td>
+                  {/* 目前年度满充/满放率不做汇总，保持为空 */}
+                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">-</td>
+                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">-</td>
+                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">-</td>
+                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">-</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          {/* 图表区：左侧月度曲线 + 全年日度热力图，右侧单月日度曲线与报表/QC */}
+          <div className="grid grid-cols-1 xl:grid-cols-[2fr_minmax(0,1fr)] gap-4">
+            <div className="space-y-4">
+              <div className="p-3 border rounded bg-white">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-sm font-semibold">月度充放次数（曲线）</div>
+                  <div className="text-xs flex items-center gap-1">
+                    <span>视图</span>
+                    <select
+                      className="border rounded px-2 py-0.5"
+                      value={monthlyViewMode}
+                      onChange={e => setMonthlyViewMode(e.target.value as 'aggregate' | 'byYear')}
+                    >
+                      <option value="aggregate">按月合计</option>
+                      <option value="byYear">按年拆分</option>
+                    </select>
+                  </div>
+                </div>
+                <div ref={monthChartRef} style={{ width: '100%', height: 260 }} />
+              </div>
+              <div className="p-3 border rounded bg-white">
+                <div className="text-sm font-semibold mb-1">全年每日充放次数热力图</div>
+                <div ref={heatmapChartRef} style={{ width: '100%', height: 320 }} />
+                <div className="mt-1 text-xs text-slate-500">
+                  第一行对应 1 月、第二行对应 2 月，横轴为 1–31 日，每个格子表示当日的充放次数。
                 </div>
               </div>
-              <div ref={dayChartRef} style={{ width: '100%', height: 280 }} />
+            </div>
+            <div className="space-y-3">
+              <div className="p-3 border rounded bg-white">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-semibold mb-1">单月日度次数曲线</div>
+                  <div className="text-xs flex items-center gap-1">
+                    <span>月份</span>
+                    <select
+                      className="border rounded px-2 py-0.5"
+                      value={selectedMonth || ''}
+                      onChange={e => setSelectedMonth(e.target.value)}
+                    >
+                      {monthsData.map(m => (
+                        <option key={m.year_month} value={m.year_month}>{m.year_month}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div ref={dayChartRef} style={{ width: '100%', height: 260 }} />
+              </div>
+
+              {result.excel_path && (
+                <div className="p-3 border rounded bg-white text-sm">
+                  报表：
+                  <a
+                    href={result.excel_path}
+                    className="text-blue-600 underline"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    下载 Excel 详细结果
+                  </a>
+                </div>
+              )}
+
+              {!!result.qc?.notes?.length && (
+                <div className="p-3 border rounded bg白">
+                  <details>
+                    <summary className="cursor-pointer text-slate-700 text-sm">QC 提示（展开查看）</summary>
+                    <ul className="list-disc ml-5 text-sm text-slate-600 mt-1">
+                      {result.qc.notes.map((n, idx) => (<li key={idx}>{n}</li>))}
+                    </ul>
+                  </details>
+                </div>
+              )}
             </div>
           </div>
-          {result.excel_path && (
-            <div className="mt-2 text-sm">
-              报表：<a href={result.excel_path} className="text-blue-600 underline" target="_blank" rel="noreferrer">下载 Excel</a>
-            </div>
-          )}
-          {!!result.qc?.notes?.length && (
-            <details className="mt-2">
-              <summary className="cursor-pointer text-slate-700">QC 提示（展开查看）</summary>
-              <ul className="list-disc ml-5 text-sm text-slate-600">
-                {result.qc.notes.map((n, idx) => (<li key={idx}>{n}</li>))}
-              </ul>
-            </details>
-          )}
         </div>
       )}
     </div>

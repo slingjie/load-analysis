@@ -18,6 +18,7 @@ from .schemas import (
     StorageCyclesResponse,
     StorageCyclesYear,
     StorageQC,
+    StorageWindowMonthSummary,
 )
 from .services import loader, quality
 from .services import cycles as cycles_svc
@@ -194,7 +195,7 @@ async def compute_storage_cycles(
     try:
         days_raw, window_debug = cycles_svc.compute_window_avg_days_with_debug(
             series_15m,
-            daily_masks=daily_masks if 'daily_masks' in locals() else {},
+            daily_masks=daily_masks if "daily_masks" in locals() else {},
             storage_cfg=storage_cfg,
             limit_info=limit_info,
             energy_formula=energy_formula,
@@ -203,7 +204,7 @@ async def compute_storage_cycles(
         logger.exception("window_avg compute failed: %s", exc)
         days_raw, window_debug = [], []
 
-    # response
+    # response：日 / 月 / 年汇总
     days: list[StorageCyclesDay] = [StorageCyclesDay(date=d["date"], cycles=float(d["cycles"])) for d in days_raw]
     month_map: dict[str, float] = {}
     year_set: set[int] = set()
@@ -227,8 +228,65 @@ async def compute_storage_cycles(
         missing_prices=int(missing_points_cnt),
     )
 
+    # 基于 window_debug 汇总 Window 月度统计（C1/C2 + charge/discharge）
+    window_month_summary: list[StorageWindowMonthSummary] = []
+    if window_debug:
+        agg: dict[str, dict[str, float]] = {}
+        for row in window_debug:
+            try:
+                date_str = str(row.get("date") or "")
+                if len(date_str) < 7:
+                    continue
+                ym = date_str[:7]
+                win = str(row.get("window") or "").lower()
+                kind = str(row.get("kind") or "").lower()
+                # 选择对应能量公式下的 full_ratio 列
+                if energy_formula == "physics":
+                    ratio = float(row.get("full_ratio_physics", 0.0) or 0.0)
+                else:
+                    ratio = float(row.get("full_ratio_sample", 0.0) or 0.0)
+                if ratio == 0.0:
+                    continue
+                bucket = agg.setdefault(
+                    ym,
+                    {
+                        "first_charge_cycles": 0.0,
+                        "first_discharge_cycles": 0.0,
+                        "second_charge_cycles": 0.0,
+                        "second_discharge_cycles": 0.0,
+                    },
+                )
+                if win == "c1" and kind == "charge":
+                    bucket["first_charge_cycles"] += ratio
+                elif win == "c1" and kind == "discharge":
+                    bucket["first_discharge_cycles"] += ratio
+                elif win == "c2" and kind == "charge":
+                    bucket["second_charge_cycles"] += ratio
+                elif win == "c2" and kind == "discharge":
+                    bucket["second_discharge_cycles"] += ratio
+            except Exception:
+                # 调试字段异常不影响主流程
+                continue
+
+        for ym, vals in sorted(agg.items()):
+            window_month_summary.append(
+                StorageWindowMonthSummary(
+                    year_month=ym,
+                    first_charge_cycles=float(vals.get("first_charge_cycles", 0.0) or 0.0),
+                    first_discharge_cycles=float(vals.get("first_discharge_cycles", 0.0) or 0.0),
+                    second_charge_cycles=float(vals.get("second_charge_cycles", 0.0) or 0.0),
+                    second_discharge_cycles=float(vals.get("second_discharge_cycles", 0.0) or 0.0),
+                )
+            )
+
     logger.info("/api/storage/cycles: source=%s points=%s", filename, isinstance(points, list) and len(points))
-    logger.info("/api/storage/cycles done: days=%s months=%s year_cycles=%s", len(days), len(months), total_cycles)
+    logger.info(
+        "/api/storage/cycles done: days=%s months=%s year_cycles=%s window_months=%s",
+        len(days),
+        len(months),
+        total_cycles,
+        len(window_month_summary),
+    )
 
     # export excel
     from datetime import datetime as _dt
@@ -275,4 +333,5 @@ async def compute_storage_cycles(
         days=days,
         qc=qc,
         excel_path=excel_rel,
+        window_month_summary=window_month_summary or None,
     )

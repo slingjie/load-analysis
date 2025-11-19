@@ -95,6 +95,20 @@ class StorageQC(BaseModel):
     monthly_demand_max: List[dict] = Field(default_factory=list, description="每月最大需量统计：[{year_month, max_kw}]")
 
 
+class StorageWindowMonthSummary(BaseModel):
+    """按 Window_debug 汇总的月度 C1/C2 + charge/discharge 结果。"""
+
+    year_month: str = Field(description="年月 YYYY-MM")
+    # C1 + charge：第一次充电窗口的满循环等效次数之和
+    first_charge_cycles: float = Field(default=0.0, description="第一次充电(C1+charge) 当月等效满循环次数之和")
+    # C1 + discharge：第一次放电窗口
+    first_discharge_cycles: float = Field(default=0.0, description="第一次放电(C1+discharge) 当月等效满循环次数之和")
+    # C2 + charge：第二次充电窗口
+    second_charge_cycles: float = Field(default=0.0, description="第二次充电(C2+charge) 当月等效满循环次数之和")
+    # C2 + discharge：第二次放电窗口
+    second_discharge_cycles: float = Field(default=0.0, description="第二次放电(C2+discharge) 当月等效满循环次数之和")
+
+
 class StorageCyclesResponse(BaseModel):
     """储能充放次数测算响应（MVP 占位）"""
     year: StorageCyclesYear
@@ -102,3 +116,8 @@ class StorageCyclesResponse(BaseModel):
     days: List[StorageCyclesDay] = Field(default_factory=list)
     qc: StorageQC = Field(default_factory=StorageQC)
     excel_path: Optional[str] = Field(default=None, description="报表路径（占位）")
+    # 可选：Window_debug 的月度汇总（供前端展示满充/满放率等统计）
+    window_month_summary: Optional[List[StorageWindowMonthSummary]] = Field(
+        default=None,
+        description="[{year_month, first_charge_cycles, first_discharge_cycles, second_charge_cycles, second_discharge_cycles}]",
+    )
