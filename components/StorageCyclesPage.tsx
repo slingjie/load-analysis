@@ -730,73 +730,177 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
           </div>
         </div>
 
-        {/* 参数表单（简化） */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-        <label className="flex flex-col gap-1">
-          <span>容量 (kWh)</span>
-          <input className="border rounded px-2 py-1" type="number" step="1" min="1" value={params.capacity_kwh}
-            onChange={e => setParams(p => ({ ...p, capacity_kwh: Number(e.target.value) }))} />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span>倍率 (C-rate)</span>
-          <input className="border rounded px-2 py-1" type="number" step="0.01" min="0" value={params.c_rate}
-            onChange={e => setParams(p => ({ ...p, c_rate: Number(e.target.value) }))} />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span>单边效率 η</span>
-          <input className="border rounded px-2 py-1" type="number" step="0.001" min="0" max="1" value={params.single_side_efficiency}
-            onChange={e => setParams(p => ({ ...p, single_side_efficiency: Number(e.target.value) }))} />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span>DOD</span>
-          <input className="border rounded px-2 py-1" type="number" step="0.01" min="0" max="1" value={params.depth_of_discharge}
-            onChange={e => setParams(p => ({ ...p, depth_of_discharge: Number(e.target.value) }))} />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span>充电余量 (kW)</span>
-          <input className="border rounded px-2 py-1" type="number" step="1" min="0" value={params.reserve_charge_kw}
-            onChange={e => setParams(p => ({ ...p, reserve_charge_kw: Number(e.target.value) }))} />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span>放电余量 (kW)</span>
-          <input className="border rounded px-2 py-1" type="number" step="1" min="0" value={params.reserve_discharge_kw}
-            onChange={e => setParams(p => ({ ...p, reserve_discharge_kw: Number(e.target.value) }))} />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span>合并阈值 (分钟)</span>
-          <input className="border rounded px-2 py-1" type="number" step="1" min="0" value={params.merge_threshold_minutes}
-            onChange={e => setParams(p => ({ ...p, merge_threshold_minutes: Number(e.target.value) }))} />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span>计费口径</span>
-          <select className="border rounded px-2 py-1" value={params.metering_mode}
-            onChange={e => setParams(p => ({ ...p, metering_mode: e.target.value as any }))}>
-            <option value="monthly_demand_max">monthly_demand_max</option>
-            <option value="transformer_capacity">transformer_capacity</option>
-          </select>
-        </label>
-        {params.metering_mode === 'transformer_capacity' && (
-          <>
+        {/* 参数表单（简化）：基础参数 + 高级设置折叠 */}
+        <div className="space-y-3 text-sm">
+          {/* 基础参数：高频必填 */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <label className="flex flex-col gap-1">
-              <span>变压器容量 (kVA)</span>
-              <input className="border rounded px-2 py-1" type="number" step="1" min="1" value={params.transformer_capacity_kva}
-                onChange={e => setParams(p => ({ ...p, transformer_capacity_kva: Number(e.target.value) }))} />
+              <span>容量</span>
+              <div className="flex items-center gap-1">
+                <input
+                  className="border rounded px-2 py-1 flex-1"
+                  type="number"
+                  step="1"
+                  min="1"
+                  value={params.capacity_kwh}
+                  onChange={e => setParams(p => ({ ...p, capacity_kwh: Number(e.target.value) }))}
+                />
+                <span className="text-xs text-slate-500 pr-1">kWh</span>
+              </div>
             </label>
             <label className="flex flex-col gap-1">
-              <span>功率因数</span>
-              <input className="border rounded px-2 py-1" type="number" step="0.01" min="0" max="1" value={params.transformer_power_factor}
-                onChange={e => setParams(p => ({ ...p, transformer_power_factor: Number(e.target.value) }))} />
+              <span>倍率</span>
+              <div className="flex items-center gap-1">
+                <input
+                  className="border rounded px-2 py-1 flex-1"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={params.c_rate}
+                  onChange={e => setParams(p => ({ ...p, c_rate: Number(e.target.value) }))}
+                />
+                <span className="text-xs text-slate-500 pr-1">C</span>
+              </div>
             </label>
-          </>
-        )}
-        <label className="flex flex-col gap-1">
-          <span>能量公式</span>
-          <select className="border rounded px-2 py-1" value={params.energy_formula}
-            onChange={e => setParams(p => ({ ...p, energy_formula: e.target.value as any }))}>
-            <option value="physics">physics</option>
-            <option value="sample">sample</option>
-          </select>
-        </label>
+            <label className="flex flex-col gap-1">
+              <span>单边效率</span>
+              <div className="flex items-center gap-1">
+                <input
+                  className="border rounded px-2 py-1 flex-1"
+                  type="number"
+                  step="0.001"
+                  min="0"
+                  max="1"
+                  value={params.single_side_efficiency}
+                  onChange={e => setParams(p => ({ ...p, single_side_efficiency: Number(e.target.value) }))}
+                />
+                <span className="text-xs text-slate-500 pr-1">η</span>
+              </div>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span>DOD</span>
+              <div className="flex items-center gap-1">
+                <input
+                  className="border rounded px-2 py-1 flex-1"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="1"
+                  value={params.depth_of_discharge}
+                  onChange={e => setParams(p => ({ ...p, depth_of_discharge: Number(e.target.value) }))}
+                />
+                <span className="text-xs text-slate-500 pr-1">比例</span>
+              </div>
+            </label>
+          </div>
+
+          {/* 高级设置：策略限制与计费口径 */}
+          <details className="rounded-lg border border-dashed border-slate-300 bg-slate-50/70 px-3 py-2">
+            <summary className="cursor-pointer text-xs md:text-sm text-slate-700 select-none">
+              高级设置（余量、合并阈值、计费口径、能量公式）
+            </summary>
+            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-3">
+              <label className="flex flex-col gap-1">
+                <span>充电余量</span>
+                <div className="flex items-center gap-1">
+                  <input
+                    className="border rounded px-2 py-1 flex-1"
+                    type="number"
+                    step="1"
+                    min="0"
+                    value={params.reserve_charge_kw}
+                    onChange={e => setParams(p => ({ ...p, reserve_charge_kw: Number(e.target.value) }))}
+                  />
+                  <span className="text-xs text-slate-500 pr-1">kW</span>
+                </div>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span>放电余量</span>
+                <div className="flex items-center gap-1">
+                  <input
+                    className="border rounded px-2 py-1 flex-1"
+                    type="number"
+                    step="1"
+                    min="0"
+                    value={params.reserve_discharge_kw}
+                    onChange={e => setParams(p => ({ ...p, reserve_discharge_kw: Number(e.target.value) }))}
+                  />
+                  <span className="text-xs text-slate-500 pr-1">kW</span>
+                </div>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span>合并阈值</span>
+                <div className="flex items-center gap-1">
+                  <input
+                    className="border rounded px-2 py-1 flex-1"
+                    type="number"
+                    step="1"
+                    min="0"
+                    value={params.merge_threshold_minutes}
+                    onChange={e => setParams(p => ({ ...p, merge_threshold_minutes: Number(e.target.value) }))}
+                  />
+                  <span className="text-xs text-slate-500 pr-1">分钟</span>
+                </div>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span>计费口径</span>
+                <select
+                  className="border rounded px-2 py-1"
+                  value={params.metering_mode}
+                  onChange={e => setParams(p => ({ ...p, metering_mode: e.target.value as any }))}
+                >
+                  <option value="monthly_demand_max">monthly_demand_max</option>
+                  <option value="transformer_capacity">transformer_capacity</option>
+                </select>
+              </label>
+
+              {params.metering_mode === 'transformer_capacity' && (
+                <>
+                  <label className="flex flex-col gap-1">
+                    <span>变压器容量</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        className="border rounded px-2 py-1 flex-1"
+                        type="number"
+                        step="1"
+                        min="1"
+                        value={params.transformer_capacity_kva}
+                        onChange={e => setParams(p => ({ ...p, transformer_capacity_kva: Number(e.target.value) }))}
+                      />
+                      <span className="text-xs text-slate-500 pr-1">kVA</span>
+                    </div>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span>功率因数</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        className="border rounded px-2 py-1 flex-1"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="1"
+                        value={params.transformer_power_factor}
+                        onChange={e => setParams(p => ({ ...p, transformer_power_factor: Number(e.target.value) }))}
+                      />
+                      <span className="text-xs text-slate-500 pr-1">cosφ</span>
+                    </div>
+                  </label>
+                </>
+              )}
+
+              <label className="flex flex-col gap-1">
+                <span>能量公式</span>
+                <select
+                  className="border rounded px-2 py-1"
+                  value={params.energy_formula}
+                  onChange={e => setParams(p => ({ ...p, energy_formula: e.target.value as any }))}
+                >
+                  <option value="physics">physics</option>
+                  <option value="sample">sample</option>
+                </select>
+              </label>
+            </div>
+          </details>
         </div>
 
         {error && <div className="text-red-600 text-sm">{error}</div>}
