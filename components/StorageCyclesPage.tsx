@@ -523,8 +523,19 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
             return `${label}：${value} 次`;
           },
         },
-        xAxis: { type: 'category', data: cats, name: '月份' },
-        yAxis: { type: 'value', name: '次数' },
+        xAxis: {
+          type: 'category',
+          data: cats,
+          name: '月份',
+          axisLine: { lineStyle: { color: '#cbd5f5' } },
+          splitLine: { show: false },
+        },
+        yAxis: {
+          type: 'value',
+          name: '次数',
+          axisLine: { lineStyle: { color: '#cbd5f5' } },
+          splitLine: { show: true, lineStyle: { color: '#e5e7eb', type: 'dashed' } },
+        },
         toolbox: {
           feature: {
             saveAsImage: {
@@ -570,7 +581,13 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
             return `${label}：${value} 次`;
           },
         },
-        xAxis: { type: 'category', data: cats, name: '日期' },
+        xAxis: {
+          type: 'category',
+          data: cats,
+          name: '日期',
+          axisLine: { lineStyle: { color: '#cbd5f5' } },
+          splitLine: { show: false },
+        },
         yAxis: {
           type: 'value',
           name: '次数',
@@ -578,6 +595,8 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
             formatter: (value: number) =>
               Number.isNaN(Number(value)) ? '-' : Number(value).toFixed(3),
           },
+          axisLine: { lineStyle: { color: '#cbd5f5' } },
+          splitLine: { show: true, lineStyle: { color: '#e5e7eb', type: 'dashed' } },
         },
         toolbox: {
           feature: {
@@ -650,7 +669,7 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
           right: 0,
           top: 'middle',
           inRange: {
-            color: ['#e0f2fe', '#60a5fa', '#1d4ed8'],
+            color: ['#eff6ff', '#3b82f6', '#1e40af'],
           },
         },
         series: [{
@@ -684,12 +703,16 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
           type: 'category',
           data: data.map(d => d.date?.slice(5) || ''),
           axisLabel: { interval: 'auto', rotate: 45, fontSize: 10 },
+          axisLine: { lineStyle: { color: '#cbd5f5' } },
+          splitLine: { show: false },
         },
         yAxis: {
           type: 'value',
           min: 0,
           max: 1,
           axisLabel: { formatter: (v: number) => `${(v * 100).toFixed(0)}%` },
+          axisLine: { lineStyle: { color: '#cbd5f5' } },
+          splitLine: { show: true, lineStyle: { color: '#e5e7eb', type: 'dashed' } },
         },
         series: [{
           type: 'line',
@@ -910,34 +933,48 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
         <div className="mt-2 space-y-3">
           {kpiMetrics && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-              <div className="p-3 bg-white rounded-xl shadow-lg border border-slate-200">
-                <div className="text-xs text-slate-500 mb-1">年累计循环次数</div>
+              <div className="p-3 bg-white rounded-xl shadow-lg border border-slate-200 border-l-4 border-blue-500">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-xs text-slate-500">年累计循环次数</div>
+                  <span className="text-xs">🔄</span>
+                </div>
                 <div className="text-lg md:text-2xl font-semibold text-slate-900">
                   {kpiMetrics.totalCycles.toFixed(2)}
                 </div>
+                <div className="text-[11px] text-slate-500 mt-1">单位：次/年</div>
               </div>
-              <div className="p-3 bg-white rounded-xl shadow-lg border border-slate-200">
-                <div className="text-xs text-slate-500 mb-1">月均循环次数</div>
+              <div className="p-3 bg-white rounded-xl shadow-lg border border-slate-200 border-l-4 border-emerald-500">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-xs text-slate-500">月均循环次数</div>
+                  <span className="text-xs">📊</span>
+                </div>
                 <div className="text-lg md:text-2xl font-semibold text-slate-900">
                   {kpiMetrics.avgCycles.toFixed(2)}
                 </div>
+                <div className="text-[11px] text-slate-500 mt-1">单位：次/月</div>
               </div>
-              <div className="p-3 bg-white rounded-xl shadow-lg border border-slate-200">
-                <div className="text-xs text-slate-500 mb-1">最高月循环次数</div>
+              <div className="p-3 bg-white rounded-xl shadow-lg border border-slate-200 border-l-4 border-orange-500">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-xs text-slate-500">最高月循环次数</div>
+                  <span className="text-xs">📈</span>
+                </div>
                 <div className="text-lg md:text-2xl font-semibold text-slate-900">
                   {kpiMetrics.maxMonth ? kpiMetrics.maxMonth.cycles.toFixed(2) : '--'}
                 </div>
-                <div className="text-xs text-slate-500 mt-1">
-                  {kpiMetrics.maxMonth?.yearMonth || '—'}
+                <div className="text-[11px] text-slate-500 mt-1">
+                  {kpiMetrics.maxMonth?.yearMonth || '—'}（次/月）
                 </div>
               </div>
-              <div className="p-3 bg-white rounded-xl shadow-lg border border-slate-200">
-                <div className="text-xs text-slate-500 mb-1">最低月循环次数</div>
+              <div className="p-3 bg-white rounded-xl shadow-lg border border-slate-200 border-l-4 border-slate-400">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-xs text-slate-500">最低月循环次数</div>
+                  <span className="text-xs">📉</span>
+                </div>
                 <div className="text-lg md:text-2xl font-semibold text-slate-900">
                   {kpiMetrics.minMonth ? kpiMetrics.minMonth.cycles.toFixed(2) : '--'}
                 </div>
-                <div className="text-xs text-slate-500 mt-1">
-                  {kpiMetrics.minMonth?.yearMonth || '—'}
+                <div className="text-[11px] text-slate-500 mt-1">
+                  {kpiMetrics.minMonth?.yearMonth || '—'}（次/月）
                 </div>
               </div>
             </div>
@@ -953,22 +990,23 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
                 基于日度循环结果按自然月折算
               </div>
             </div>
-            <table className="min-w-full text-xs md:text-sm border-collapse">
-              <thead>
-                <tr className="bg-slate-50 border-b border-slate-200">
-                  <th className="px-3 py-2 text-left font-medium text-slate-600">月份</th>
-                  <th className="px-3 py-2 text-right font-medium text-slate-600">有效天数（天）</th>
-                  <th className="px-3 py-2 text-right font-medium text-slate-600">平均日循环数（次/天）</th>
-                  <th className="px-3 py-2 text-right font-medium text-slate-600">有效循环数（次）</th>
-                  <th className="px-3 py-2 text-right font-medium text-slate-600">等效循环数（次）</th>
-                  <th className="px-3 py-2 text-right font-medium text-slate-600">第一次充电满充率（%）</th>
-                  <th className="px-3 py-2 text-right font-medium text-slate-600">第一次充电满放率（%）</th>
-                  <th className="px-3 py-2 text-right font-medium text-slate-600">第二次充电满充率（%）</th>
-                  <th className="px-3 py-2 text-right font-medium text-slate-600">第二次充电满放率（%）</th>
-                  <th className="px-3 py-2 text-right font-medium text-slate-600">平均尖占比（%）</th>
-                </tr>
-              </thead>
-              <tbody>
+            <div className="max-h-80 overflow-y-auto">
+              <table className="min-w-full text-xs md:text-sm border-collapse">
+                <thead className="sticky top-0 bg-slate-50 z-10">
+                  <tr className="border-b border-slate-200">
+                    <th className="px-3 py-2 text-left font-medium text-slate-600">月份</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-600">有效天数（天）</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-600 bg-slate-50">平均日循环数（次/天）</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-600 bg-slate-50">有效循环数（次）</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-600">等效循环数（次）</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-600">第一次充电满充率（%）</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-600">第一次充电满放率（%）</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-600">第二次充电满充率（%）</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-600">第二次充电满放率（%）</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-600">平均尖占比（%）</th>
+                  </tr>
+                </thead>
+                <tbody>
                 {Array.from({ length: 12 }, (_, i) => {
                   const monthLabel = `${i + 1}月`;
                   const validDays = monthValidDays[i] ?? 0;
@@ -1022,10 +1060,10 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
                       <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
                         {validDays || '-'}
                       </td>
-                      <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
+                      <td className="px-3 py-1.5 text-right tabular-nums text-slate-700 bg-slate-50">
                         {avgDailyStr}
                       </td>
-                      <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
+                      <td className="px-3 py-1.5 text-right tabular-nums text-slate-700 bg-slate-50 font-semibold">
                         {totalStr}
                       </td>
                       <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
@@ -1054,12 +1092,12 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
                   <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
                     {yearValidDays || '-'}
                   </td>
-                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
+                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800 bg-slate-100">
                     {yearValidDays && yearTotalCycles
                       ? Number(yearTotalCycles / yearValidDays).toFixed(3)
                       : '-'}
                   </td>
-                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
+                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800 bg-slate-100">
                     {yearTotalCycles === 0
                       ? '-'
                       : Number(yearTotalCycles).toFixed(3)}
@@ -1087,7 +1125,8 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
                   </td>
                 </tr>
               </tbody>
-            </table>
+              </table>
+            </div>
           </div>
 
           {/* 图表区：四块图统一为 2×2 网格，尺寸协调 */}
