@@ -10,6 +10,50 @@ import type { LoadDataPoint } from '../utils';
 import { computeStorageCycles, type StorageParamsPayload } from '../storageApi';
 
 const CONFIG_STORAGE_PREFIX = 'storageCyclesConfig:';
+const SOLVE_CAPACITY_STEPS = 8; // 反推容量时默认预计算步数（可通过界面修改实际步数）
+
+// 基于后端返回的日度 cycles 计算“全年合计等效循环数”
+const computeYearEquivalentCyclesFromDays = (
+  days: BackendStorageCyclesResponse['days'] | undefined | null,
+): number => {
+  if (!days || !days.length) return 0;
+  const monthDaySets: Array<Set<string>> = Array.from({ length: 12 }, () => new Set<string>());
+  const monthTotal: number[] = new Array(12).fill(0);
+  const monthYear: Array<number | null> = new Array(12).fill(null);
+
+  days.forEach(d => {
+    if (!d?.date) return;
+    const parts = String(d.date).split('-');
+    if (parts.length !== 3) return;
+    const year = parseInt(parts[0], 10);
+    const month = parseInt(parts[1], 10);
+    if (!year || !month || month < 1 || month > 12) return;
+    const idx = month - 1;
+    const dateKey = String(d.date);
+    monthDaySets[idx].add(dateKey);
+    monthTotal[idx] += Number(d.cycles ?? 0);
+    if (monthYear[idx] == null) {
+      monthYear[idx] = year;
+    }
+  });
+
+  const monthEqCyclesArr: Array<number | null> = new Array(12).fill(null);
+  for (let i = 0; i < 12; i++) {
+    const validDays = monthDaySets[i].size;
+    if (validDays > 0) {
+      const y = monthYear[i] ?? new Date().getFullYear();
+      const monthDaysCount = new Date(y, i + 1, 0).getDate();
+      const total = monthTotal[i];
+      monthEqCyclesArr[i] = (total / validDays) * monthDaysCount;
+    }
+  }
+
+  const yearEqCyclesVal = monthEqCyclesArr.reduce(
+    (sum, v) => (v != null ? sum + v : sum),
+    0,
+  );
+  return yearEqCyclesVal;
+};
 
 interface Props {
   scheduleData: {
@@ -51,6 +95,16 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
   const [selectedSavedConfig, setSelectedSavedConfig] = useState('');
   const [configNotice, setConfigNotice] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const [targetYearEqCyclesInput, setTargetYearEqCyclesInput] = useState<string>('');
+  const [solveStartCapacityKwh, setSolveStartCapacityKwh] = useState<number>(5000);
+  const [solveStepCapacityKwh, setSolveStepCapacityKwh] = useState<number>(500);
+  const [solveSteps, setSolveSteps] = useState<number>(SOLVE_CAPACITY_STEPS);
+  const [solveSuggestion, setSolveSuggestion] = useState<{
+    targetYearEq: number;
+    bestCapacityKwh: number;
+    bestYearEqCycles: number;
+  } | null>(null);
+  const didAutoApplyDefaultRef = useRef(false);
 
   // 将 Date 转为“本地朴素时间”字符串（YYYY-MM-DD HH:mm:ss），避免 UTC 偏移与日界错位
   const toLocalNaiveString = (d: Date) => {
@@ -107,9 +161,73 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
     loadStoredConfigs();
   }, [loadStoredConfigs]);
 
+  // 页面初次加载时自动加载“最近保存”的配置（按 savedAt 最大值选取）
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (didAutoApplyDefaultRef.current) return;
+
+    try {
+      const keys = Object.keys(window.localStorage ?? {}).filter(key =>
+        key.startsWith(CONFIG_STORAGE_PREFIX),
+      );
+      if (!keys.length) return;
+
+      let latestName: string | null = null;
+      let latestPayload: any = null;
+      let latestTs = 0;
+
+      keys.forEach(fullKey => {
+        const raw = window.localStorage.getItem(fullKey);
+        if (!raw) return;
+        try {
+          const parsed = JSON.parse(raw);
+          const savedAt = parsed?.savedAt;
+          const ts = savedAt ? Date.parse(savedAt) : 0;
+          if (Number.isFinite(ts) && ts >= latestTs) {
+            latestTs = ts;
+            latestPayload = parsed;
+            latestName = fullKey.slice(CONFIG_STORAGE_PREFIX.length);
+          }
+        } catch {
+          // 单个配置解析失败不影响整体
+        }
+      });
+
+      if (!latestPayload || !latestName) return;
+
+      // 应用最近保存的配置到基础参数与反推容量参数
+      if (latestPayload.params) {
+        setParams(p => ({ ...p, ...latestPayload.params }));
+      }
+      if (latestPayload.solveConfig) {
+        const cfg = latestPayload.solveConfig as any;
+        if (typeof cfg.solveStartCapacityKwh === 'number') {
+          setSolveStartCapacityKwh(cfg.solveStartCapacityKwh);
+        }
+        if (typeof cfg.solveStepCapacityKwh === 'number') {
+          setSolveStepCapacityKwh(cfg.solveStepCapacityKwh);
+        }
+        if (typeof cfg.solveSteps === 'number' && cfg.solveSteps > 0) {
+          setSolveSteps(cfg.solveSteps);
+        }
+        if (cfg.targetYearEqCyclesInput != null) {
+          setTargetYearEqCyclesInput(String(cfg.targetYearEqCyclesInput));
+        }
+      }
+
+      setSavedConfigName(latestName);
+      setSelectedSavedConfig(latestName);
+      setConfigNotice(`已自动加载最近保存的配置“${latestName}”`);
+      didAutoApplyDefaultRef.current = true;
+    } catch {
+      // 自动加载失败时静默降级，不影响手动选择
+    }
+  }, []);
+
   const handleUpload = async () => {
     setError(null);
     setResult(null);
+    setSolveSuggestion(null);
     const input = fileRef.current;
     let file: File | null = null;
     if (input && input.files && input.files.length > 0) {
@@ -197,9 +315,15 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
       setConfigNotice('请输入配置名称以保存当前参数');
       return;
     }
+    const solveConfig = {
+      targetYearEqCyclesInput,
+      solveStartCapacityKwh,
+      solveStepCapacityKwh,
+      solveSteps,
+    };
     window.localStorage.setItem(
       `${CONFIG_STORAGE_PREFIX}${name}`,
-      JSON.stringify({ params, savedAt: new Date().toISOString() }),
+      JSON.stringify({ params, solveConfig, savedAt: new Date().toISOString() }),
     );
     setConfigNotice(`配置“${name}”已保存`);
     loadStoredConfigs();
@@ -217,6 +341,21 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
       const parsed = JSON.parse(raw);
       if (parsed.params) {
         setParams(p => ({ ...p, ...parsed.params }));
+        if (parsed.solveConfig) {
+          const cfg = parsed.solveConfig as any;
+          if (typeof cfg.solveStartCapacityKwh === 'number') {
+            setSolveStartCapacityKwh(cfg.solveStartCapacityKwh);
+          }
+          if (typeof cfg.solveStepCapacityKwh === 'number') {
+            setSolveStepCapacityKwh(cfg.solveStepCapacityKwh);
+          }
+          if (typeof cfg.solveSteps === 'number' && cfg.solveSteps > 0) {
+            setSolveSteps(cfg.solveSteps);
+          }
+          if (cfg.targetYearEqCyclesInput != null) {
+            setTargetYearEqCyclesInput(String(cfg.targetYearEqCyclesInput));
+          }
+        }
         setSavedConfigName(selectedSavedConfig);
         setConfigNotice(`已加载“${selectedSavedConfig}”`);
       } else {
@@ -235,6 +374,12 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
     const payload = {
       name: safeName,
       params,
+      solveConfig: {
+        targetYearEqCyclesInput,
+        solveStartCapacityKwh,
+        solveStepCapacityKwh,
+        solveSteps,
+      },
       exportedAt: new Date().toISOString(),
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -261,6 +406,21 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
       const parsed = JSON.parse(text);
       if (parsed.params) {
         setParams(p => ({ ...p, ...parsed.params }));
+        if (parsed.solveConfig) {
+          const cfg = parsed.solveConfig as any;
+          if (typeof cfg.solveStartCapacityKwh === 'number') {
+            setSolveStartCapacityKwh(cfg.solveStartCapacityKwh);
+          }
+          if (typeof cfg.solveStepCapacityKwh === 'number') {
+            setSolveStepCapacityKwh(cfg.solveStepCapacityKwh);
+          }
+          if (typeof cfg.solveSteps === 'number' && cfg.solveSteps > 0) {
+            setSolveSteps(cfg.solveSteps);
+          }
+          if (cfg.targetYearEqCyclesInput != null) {
+            setTargetYearEqCyclesInput(String(cfg.targetYearEqCyclesInput));
+          }
+        }
         const name = (parsed.name ?? file.name.replace(/\.[^.]+$/, '')).trim();
         if (name) setSavedConfigName(name);
         setConfigNotice(`已导入配置 ${name || file.name}`);
@@ -274,6 +434,190 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
         event.target.value = '';
       }
       loadStoredConfigs();
+    }
+  };
+
+  // 按目标“全年合计等效循环数”反推容量（基于预计算映射 + 线性插值）
+  const handleSolveCapacityByTargetCycles = async () => {
+    setError(null);
+    setSolveSuggestion(null);
+
+    const target = Number(targetYearEqCyclesInput);
+    if (!Number.isFinite(target) || target <= 0) {
+      setError('请先输入大于 0 的目标全年合计等效循环数');
+      return;
+    }
+    if (!(solveStartCapacityKwh > 0)) {
+      setError('请先输入大于 0 的起始容量');
+      return;
+    }
+    if (!(solveStepCapacityKwh > 0)) {
+      setError('请先输入大于 0 的容量步长');
+      return;
+    }
+    if (!(solveSteps > 0)) {
+      setError('请先输入大于 0 的预计算步数');
+      return;
+    }
+
+    const input = fileRef.current;
+    let file: File | null = null;
+    if (input && input.files && input.files.length > 0) {
+      file = input.files[0];
+      setFileName(prev => prev || file.name);
+    }
+    if (!file && !useAnalyzedData) {
+      setError('请选择待测算的负荷文件（CSV/XLSX）或勾选“使用负荷分析已上传数据”');
+      return;
+    }
+
+    if (useAnalyzedData && (!externalCleanedData || externalCleanedData.length === 0)) {
+      setError('“负荷分析”页没有可用数据，请先在“负荷分析”页上传并处理，或在本页选择负荷文件。');
+      return;
+    }
+
+    const pointsPayload = (useAnalyzedData && externalCleanedData && externalCleanedData.length > 0)
+      ? externalCleanedData
+          .slice()
+          .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+          .map(p => ({
+            timestamp: toLocalNaiveString(p.timestamp),
+            load_kwh: Number(p.load),
+          }))
+      : undefined;
+
+    const baseStorage = {
+      c_rate: params.c_rate,
+      single_side_efficiency: params.single_side_efficiency,
+      depth_of_discharge: params.depth_of_discharge,
+      reserve_charge_kw: params.reserve_charge_kw,
+      reserve_discharge_kw: params.reserve_discharge_kw,
+      metering_mode: params.metering_mode,
+      transformer_capacity_kva: params.metering_mode === 'transformer_capacity' ? params.transformer_capacity_kva : undefined,
+      transformer_power_factor: params.metering_mode === 'transformer_capacity' ? params.transformer_power_factor : undefined,
+      calc_style: 'window_avg' as const,
+      energy_formula: params.energy_formula,
+      merge_threshold_minutes: params.merge_threshold_minutes,
+    };
+
+    const hasDischarge = Array.isArray(scheduleData.monthlySchedule)
+      && scheduleData.monthlySchedule.some((monthRow: any[]) =>
+        Array.isArray(monthRow) && monthRow.some(cell => cell?.op === '放'));
+    const hasAnyPrice = Array.isArray(scheduleData.prices)
+      && scheduleData.prices.some(mp => mp && Object.values(mp).some(v => v != null));
+    if (!hasDischarge) {
+      setError('当前排程没有放电窗口，请先在排程/逻辑中设置“放”时段后再测算。');
+      return;
+    }
+    if (!hasAnyPrice) {
+      setError('当前电价配置全部为空，请先设置 TOU 电价（含尖/峰/平/谷）。');
+      return;
+    }
+
+    const v = validateParams();
+    if (v) {
+      setError(v);
+      return;
+    }
+
+    const capacities: number[] = [];
+    const yearEqCyclesList: number[] = [];
+    const responses: BackendStorageCyclesResponse[] = [];
+
+    setLoading(true);
+    try {
+      const steps = solveSteps > 0 ? solveSteps : SOLVE_CAPACITY_STEPS;
+      for (let i = 0; i < steps; i++) {
+        const cap = solveStartCapacityKwh + i * solveStepCapacityKwh;
+        if (!(cap > 0)) continue;
+        const payload: StorageParamsPayload = {
+          storage: {
+            ...baseStorage,
+            capacity_kwh: cap,
+          },
+          strategySource: {
+            monthlySchedule: scheduleData.monthlySchedule,
+            dateRules: scheduleData.dateRules,
+          },
+          monthlyTouPrices: scheduleData.prices,
+          points: pointsPayload,
+        };
+        const resp = await computeStorageCycles(file, payload);
+        const yearEq = computeYearEquivalentCyclesFromDays(resp.days);
+        capacities.push(cap);
+        yearEqCyclesList.push(yearEq);
+        responses.push(resp);
+      }
+
+      if (!capacities.length) {
+        setError('容量搜索未产生有效结果，请检查起始容量与步长设置。');
+        return;
+      }
+
+      let bestIdx = 0;
+      let bestDiff = Math.abs(yearEqCyclesList[0] - target);
+      for (let i = 1; i < yearEqCyclesList.length; i++) {
+        const diff = Math.abs(yearEqCyclesList[i] - target);
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          bestIdx = i;
+        }
+      }
+
+      let interpCapacity = capacities[bestIdx];
+      const minCycles = Math.min(...yearEqCyclesList);
+      const maxCycles = Math.max(...yearEqCyclesList);
+      if (target >= minCycles && target <= maxCycles) {
+        for (let i = 0; i < yearEqCyclesList.length - 1; i++) {
+          const c1 = yearEqCyclesList[i];
+          const c2 = yearEqCyclesList[i + 1];
+          if ((target >= c1 && target <= c2) || (target >= c2 && target <= c1)) {
+            const cap1 = capacities[i];
+            const cap2 = capacities[i + 1];
+            if (c1 !== c2) {
+              interpCapacity = cap1 + (target - c1) * (cap2 - cap1) / (c2 - c1);
+            } else {
+              interpCapacity = (cap1 + cap2) / 2;
+            }
+            break;
+          }
+        }
+      }
+
+      let finalCapacity = interpCapacity;
+      let finalResp: BackendStorageCyclesResponse | null = null;
+      const existingIdx = capacities.findIndex(c => Math.abs(c - interpCapacity) < 1e-6);
+      if (existingIdx >= 0) {
+        finalResp = responses[existingIdx];
+        finalCapacity = capacities[existingIdx];
+      } else {
+        const payload: StorageParamsPayload = {
+          storage: {
+            ...baseStorage,
+            capacity_kwh: interpCapacity,
+          },
+          strategySource: {
+            monthlySchedule: scheduleData.monthlySchedule,
+            dateRules: scheduleData.dateRules,
+          },
+          monthlyTouPrices: scheduleData.prices,
+          points: pointsPayload,
+        };
+        finalResp = await computeStorageCycles(file, payload);
+      }
+
+      const finalYearEq = computeYearEquivalentCyclesFromDays(finalResp?.days ?? []);
+      setParams(p => ({ ...p, capacity_kwh: finalCapacity }));
+      setResult(finalResp);
+      setSolveSuggestion({
+        targetYearEq: target,
+        bestCapacityKwh: finalCapacity,
+        bestYearEqCycles: finalYearEq,
+      });
+    } catch (err: any) {
+      setError(err?.message || '按目标全年等效循环数反推容量失败');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -892,8 +1236,15 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
 
         {/* 参数表单（简化）：基础参数 + 高级设置折叠 */}
         <div className="space-y-3 text-sm">
-          {/* 基础参数：高频必填 */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {/* 常规配置标题与说明 */}
+          <div className="flex items-baseline justify-between">
+            <div className="text-sm font-semibold text-slate-800">常规配置</div>
+            <div className="text-[11px] text-slate-500">
+              建议先设置容量与余量，再根据需求选择计费口径与能量公式。
+            </div>
+          </div>
+          {/* 基础参数：高频必填（常规配置） */}
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             <label className="flex flex-col gap-1">
               <span>容量</span>
               <div className="flex items-center gap-1">
@@ -907,85 +1258,203 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
                 />
                 <span className="text-xs text-slate-500 pr-1">kWh</span>
               </div>
-            </label>
-            <label className="flex flex-col gap-1">
-              <span>倍率</span>
-              <div className="flex items-center gap-1">
-                <input
-                  className="border rounded px-2 py-1 flex-1"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={params.c_rate}
-                  onChange={e => setParams(p => ({ ...p, c_rate: Number(e.target.value) }))}
-                />
-                <span className="text-xs text-slate-500 pr-1">C</span>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                储能额定容量，用于计算可参与调度的能量规模。
               </div>
             </label>
             <label className="flex flex-col gap-1">
-              <span>单边效率</span>
+              <span>充电余量</span>
               <div className="flex items-center gap-1">
                 <input
                   className="border rounded px-2 py-1 flex-1"
                   type="number"
-                  step="0.001"
+                  step="1"
                   min="0"
-                  max="1"
-                  value={params.single_side_efficiency}
-                  onChange={e => setParams(p => ({ ...p, single_side_efficiency: Number(e.target.value) }))}
+                  value={params.reserve_charge_kw}
+                  onChange={e => setParams(p => ({ ...p, reserve_charge_kw: Number(e.target.value) }))}
                 />
-                <span className="text-xs text-slate-500 pr-1">η</span>
+                <span className="text-xs text-slate-500 pr-1">kW</span>
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                为上游负荷预留的充电功率，上限越大可用充电功率越小。
               </div>
             </label>
             <label className="flex flex-col gap-1">
-              <span>DOD</span>
+              <span>放电余量</span>
               <div className="flex items-center gap-1">
                 <input
                   className="border rounded px-2 py-1 flex-1"
                   type="number"
-                  step="0.01"
+                  step="1"
                   min="0"
-                  max="1"
-                  value={params.depth_of_discharge}
-                  onChange={e => setParams(p => ({ ...p, depth_of_discharge: Number(e.target.value) }))}
+                  value={params.reserve_discharge_kw}
+                  onChange={e => setParams(p => ({ ...p, reserve_discharge_kw: Number(e.target.value) }))}
                 />
-                <span className="text-xs text-slate-500 pr-1">比例</span>
+                <span className="text-xs text-slate-500 pr-1">kW</span>
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                为下游负荷预留的放电功率，上限越大可用放电功率越小。
+              </div>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span>计费口径</span>
+              <select
+                className="border rounded px-2 py-1"
+                value={params.metering_mode}
+                onChange={e => setParams(p => ({ ...p, metering_mode: e.target.value as any }))}
+              >
+                <option value="monthly_demand_max">monthly_demand_max</option>
+                <option value="transformer_capacity">transformer_capacity</option>
+              </select>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                决定需量上限的计算方式，会影响尖峰削峰空间与收益测算。
+              </div>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span>能量公式</span>
+              <select
+                className="border rounded px-2 py-1"
+                value={params.energy_formula}
+                onChange={e => setParams(p => ({ ...p, energy_formula: e.target.value as any }))}
+              >
+                <option value="physics">physics</option>
+                <option value="sample">sample</option>
+              </select>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                physics 为物理模型精算，sample 为样本法近似，建议优先使用 physics。
               </div>
             </label>
           </div>
 
-          {/* 高级设置：策略限制与计费口径 */}
+          {/* 反推容量：按目标全年等效循环数搜索（可选，可折叠） */}
+          <details className="rounded-lg border border-dashed border-emerald-300 bg-emerald-50/60 px-3 py-2 text-xs md:text-sm">
+            <summary className="cursor-pointer text-xs md:text-sm text-slate-700 select-none">
+              按目标全年合计等效循环数反推容量（可选）
+            </summary>
+            <div className="mt-2 space-y-2">
+              <div className="flex justify-end mb-1">
+                <button
+                  type="button"
+                  className="px-2 py-1 rounded bg-emerald-600 text-white text-xs disabled:opacity-60"
+                  onClick={handleSolveCapacityByTargetCycles}
+                  disabled={loading}
+                >
+                  按目标值反推容量
+                </button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <label className="flex flex-col gap-1">
+                  <span>目标全年合计等效循环数</span>
+                  <input
+                    className="border rounded px-2 py-1 w-full"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={targetYearEqCyclesInput}
+                    onChange={e => setTargetYearEqCyclesInput(e.target.value)}
+                    placeholder="例如 300"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span>起始容量</span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      className="border rounded px-2 py-1 w-full"
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={solveStartCapacityKwh}
+                      onChange={e => setSolveStartCapacityKwh(Number(e.target.value) || 0)}
+                    />
+                    <span className="text-xs text-slate-500 pr-1">kWh</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">
+                    默认取当前容量附近区间起点，可按需调整。
+                  </div>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span>容量步长</span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      className="border rounded px-2 py-1 w-full"
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={solveStepCapacityKwh}
+                      onChange={e => setSolveStepCapacityKwh(Number(e.target.value) || 0)}
+                    />
+                    <span className="text-xs text-slate-500 pr-1">kWh</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">
+                    将按起始容量起步，每步增加此容量，预计算 {solveSteps > 0 ? solveSteps : SOLVE_CAPACITY_STEPS} 个容量点。
+                  </div>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span>预计算步数</span>
+                  <input
+                    className="border rounded px-2 py-1 w-full"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={solveSteps}
+                    onChange={e => setSolveSteps(Number(e.target.value) || 0)}
+                  />
+                </label>
+              </div>
+              <div className="text-[11px] text-slate-500">
+                该功能仅用于反推推荐容量，不会覆盖“开始测算”按钮的单次测算逻辑。
+              </div>
+            </div>
+          </details>
+
+          {/* 高级设置：倍率 / 效率 / DOD / 合并阈值等 */}
           <details className="rounded-lg border border-dashed border-slate-300 bg-slate-50/70 px-3 py-2">
             <summary className="cursor-pointer text-xs md:text-sm text-slate-700 select-none">
-              高级设置（余量、合并阈值、计费口径、能量公式）
+              高级设置（倍率、效率、DOD、合并阈值等）
             </summary>
             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-3">
               <label className="flex flex-col gap-1">
-                <span>充电余量</span>
+                <span>倍率</span>
                 <div className="flex items-center gap-1">
                   <input
                     className="border rounded px-2 py-1 flex-1"
                     type="number"
-                    step="1"
+                    step="0.01"
                     min="0"
-                    value={params.reserve_charge_kw}
-                    onChange={e => setParams(p => ({ ...p, reserve_charge_kw: Number(e.target.value) }))}
+                    value={params.c_rate}
+                    onChange={e => setParams(p => ({ ...p, c_rate: Number(e.target.value) }))}
                   />
-                  <span className="text-xs text-slate-500 pr-1">kW</span>
+                  <span className="text-xs text-slate-500 pr-1">C</span>
                 </div>
               </label>
               <label className="flex flex-col gap-1">
-                <span>放电余量</span>
+                <span>单边效率</span>
                 <div className="flex items-center gap-1">
                   <input
                     className="border rounded px-2 py-1 flex-1"
                     type="number"
-                    step="1"
+                    step="0.001"
                     min="0"
-                    value={params.reserve_discharge_kw}
-                    onChange={e => setParams(p => ({ ...p, reserve_discharge_kw: Number(e.target.value) }))}
+                    max="1"
+                    value={params.single_side_efficiency}
+                    onChange={e => setParams(p => ({ ...p, single_side_efficiency: Number(e.target.value) }))}
                   />
-                  <span className="text-xs text-slate-500 pr-1">kW</span>
+                  <span className="text-xs text-slate-500 pr-1">η</span>
+                </div>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span>DOD</span>
+                <div className="flex items-center gap-1">
+                  <input
+                    className="border rounded px-2 py-1 flex-1"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="1"
+                    value={params.depth_of_discharge}
+                    onChange={e => setParams(p => ({ ...p, depth_of_discharge: Number(e.target.value) }))}
+                  />
+                  <span className="text-xs text-slate-500 pr-1">比例</span>
                 </div>
               </label>
               <label className="flex flex-col gap-1">
@@ -1001,17 +1470,6 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
                   />
                   <span className="text-xs text-slate-500 pr-1">分钟</span>
                 </div>
-              </label>
-              <label className="flex flex-col gap-1">
-                <span>计费口径</span>
-                <select
-                  className="border rounded px-2 py-1"
-                  value={params.metering_mode}
-                  onChange={e => setParams(p => ({ ...p, metering_mode: e.target.value as any }))}
-                >
-                  <option value="monthly_demand_max">monthly_demand_max</option>
-                  <option value="transformer_capacity">transformer_capacity</option>
-                </select>
               </label>
 
               {params.metering_mode === 'transformer_capacity' && (
@@ -1047,18 +1505,6 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
                   </label>
                 </>
               )}
-
-              <label className="flex flex-col gap-1">
-                <span>能量公式</span>
-                <select
-                  className="border rounded px-2 py-1"
-                  value={params.energy_formula}
-                  onChange={e => setParams(p => ({ ...p, energy_formula: e.target.value as any }))}
-                >
-                  <option value="physics">physics</option>
-                  <option value="sample">sample</option>
-                </select>
-              </label>
             </div>
           </details>
         </div>
@@ -1138,6 +1584,12 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
                 <div className="text-[11px] text-slate-500 mt-2 text-right">
                   全年合计等效循环数：{yearEquivalentCycles === 0 ? '-' : Number(yearEquivalentCycles).toFixed(2)} 次
                 </div>
+                {solveSuggestion && (
+                  <div className="text-[11px] text-emerald-600 mt-1 text-right">
+                    目标 {solveSuggestion.targetYearEq.toFixed(2)} 次，推荐容量约{' '}
+                    {solveSuggestion.bestCapacityKwh.toFixed(0)} kWh（等效 {solveSuggestion.bestYearEqCycles.toFixed(2)} 次）
+                  </div>
+                )}
               </div>
               <div className="p-2.5 bg-white rounded-xl shadow-lg border border-slate-200 border-l-4 border-emerald-500">
                 <div className="flex items-center justify-between mb-1">
