@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   MonthlyTouPrices,
   Schedule,
@@ -8,6 +8,8 @@ import type {
 } from '../types';
 import type { LoadDataPoint } from '../utils';
 import { computeStorageCycles, type StorageParamsPayload } from '../storageApi';
+
+const CONFIG_STORAGE_PREFIX = 'storageCyclesConfig:';
 
 interface Props {
   scheduleData: {
@@ -41,8 +43,14 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
     setUseAnalyzedData(!!(externalCleanedData && externalCleanedData.length > 0));
   }, [externalCleanedData]);
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BackendStorageCyclesResponse | null>(null);
+  const [savedConfigName, setSavedConfigName] = useState('');
+  const [availableConfigs, setAvailableConfigs] = useState<string[]>([]);
+  const [selectedSavedConfig, setSelectedSavedConfig] = useState('');
+  const [configNotice, setConfigNotice] = useState<string | null>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   // 将 Date 转为“本地朴素时间”字符串（YYYY-MM-DD HH:mm:ss），避免 UTC 偏移与日界错位
   const toLocalNaiveString = (d: Date) => {
@@ -85,6 +93,19 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
     }
     return null;
   };
+
+  const loadStoredConfigs = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const names = Object.keys(window.localStorage ?? {})
+      .filter(key => key.startsWith(CONFIG_STORAGE_PREFIX))
+      .map(key => key.slice(CONFIG_STORAGE_PREFIX.length));
+    setAvailableConfigs(names);
+    setSelectedSavedConfig(prev => (names.includes(prev) ? prev : ''));
+  }, []);
+
+  useEffect(() => {
+    loadStoredConfigs();
+  }, [loadStoredConfigs]);
 
   const handleUpload = async () => {
     setError(null);
@@ -166,6 +187,93 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
       setError(e?.message || '计算失败');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSaveConfig = () => {
+    if (typeof window === 'undefined') return;
+    const name = savedConfigName.trim();
+    if (!name) {
+      setConfigNotice('请输入配置名称以保存当前参数');
+      return;
+    }
+    window.localStorage.setItem(
+      `${CONFIG_STORAGE_PREFIX}${name}`,
+      JSON.stringify({ params, savedAt: new Date().toISOString() }),
+    );
+    setConfigNotice(`配置“${name}”已保存`);
+    loadStoredConfigs();
+  };
+
+  const handleLoadSavedConfig = () => {
+    if (typeof window === 'undefined' || !selectedSavedConfig) return;
+    const raw = window.localStorage.getItem(`${CONFIG_STORAGE_PREFIX}${selectedSavedConfig}`);
+    if (!raw) {
+      setConfigNotice(`配置“${selectedSavedConfig}”不存在`);
+      loadStoredConfigs();
+      return;
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed.params) {
+        setParams(p => ({ ...p, ...parsed.params }));
+        setSavedConfigName(selectedSavedConfig);
+        setConfigNotice(`已加载“${selectedSavedConfig}”`);
+      } else {
+        setConfigNotice('配置内容缺少参数');
+      }
+    } catch (err) {
+      setConfigNotice('配置解析失败');
+    }
+  };
+
+  const handleExportConfig = () => {
+    if (typeof window === 'undefined') return;
+    const candidateName =
+      savedConfigName || selectedSavedConfig || `storage-config-${Date.now()}`;
+    const safeName = candidateName.replace(/\s+/g, '-');
+    const payload = {
+      name: safeName,
+      params,
+      exportedAt: new Date().toISOString(),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${safeName}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+    setConfigNotice(`已导出配置 ${safeName}`);
+  };
+
+  const handleImportClick = () => {
+    importInputRef.current?.click();
+  };
+
+  const handleImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (parsed.params) {
+        setParams(p => ({ ...p, ...parsed.params }));
+        const name = (parsed.name ?? file.name.replace(/\.[^.]+$/, '')).trim();
+        if (name) setSavedConfigName(name);
+        setConfigNotice(`已导入配置 ${name || file.name}`);
+      } else {
+        setConfigNotice('导入文件缺少 params 字段');
+      }
+    } catch (err) {
+      setConfigNotice('导入失败，文件必须为 JSON');
+    } finally {
+      if (event.target) {
+        event.target.value = '';
+      }
+      loadStoredConfigs();
     }
   };
 
@@ -726,6 +834,27 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
     return () => { try { chart && chart.dispose && chart.dispose(); } catch { /* ignore */ } };
   }, [tipSummary?.dayStats, tipSummary?.ratio]);
 
+  // 计算进度条：在 loading=true 时做一个伪进度，提升感知
+  useEffect(() => {
+    let timer: number | undefined;
+    if (loading) {
+      setProgress(10);
+      timer = window.setInterval(() => {
+        setProgress(prev => {
+          if (prev >= 90) return prev;
+          return prev + 5;
+        });
+      }, 300);
+    } else {
+      setProgress(0);
+    }
+    return () => {
+      if (timer) {
+        window.clearInterval(timer);
+      }
+    };
+  }, [loading]);
+
 
   return (
     <div className="space-y-8">
@@ -740,6 +869,14 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
             {loading ? '计算中…' : '开始测算'}
           </button>
         </div>
+        {loading && progress > 0 && (
+          <div className="mt-2 h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
+            <div
+              className="h-full rounded-full bg-emerald-500 transition-all duration-300"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
           <label className="flex items-center gap-2">
@@ -926,51 +1063,110 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
           </details>
         </div>
 
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <input
+            type="text"
+            value={savedConfigName}
+            onChange={e => setSavedConfigName(e.target.value)}
+            placeholder="保存配置名称"
+            className="border rounded px-2 py-1 text-xs w-36"
+          />
+          <button
+            onClick={handleSaveConfig}
+            className="px-2 py-1 rounded bg-slate-900 text-white text-xs disabled:opacity-40"
+            disabled={!savedConfigName.trim()}
+          >
+            保存配置
+          </button>
+          <select
+            value={selectedSavedConfig}
+            onChange={e => setSelectedSavedConfig(e.target.value)}
+            className="border rounded px-2 py-1 text-xs"
+          >
+            <option value="">选择已保存配置</option>
+            {availableConfigs.map(name => (
+              <option key={name} value={name}>{name}</option>
+            ))}
+          </select>
+          <button
+            onClick={handleLoadSavedConfig}
+            className="px-2 py-1 rounded bg-blue-500 text-white text-xs disabled:opacity-40"
+            disabled={!selectedSavedConfig}
+          >
+            加载配置
+          </button>
+          <button
+            onClick={handleExportConfig}
+            className="px-2 py-1 rounded border border-slate-400 text-xs"
+          >
+            导出 JSON
+          </button>
+          <button
+            onClick={handleImportClick}
+            className="px-2 py-1 rounded border border-slate-400 text-xs"
+          >
+            导入 JSON
+          </button>
+          <input
+            type="file"
+            ref={importInputRef}
+            className="hidden"
+            accept="application/json"
+            onChange={handleImportFile}
+          />
+        </div>
+        {configNotice && (
+          <div className="text-[11px] text-slate-500">{configNotice}</div>
+        )}
+
         {error && <div className="text-red-600 text-sm">{error}</div>}
       </div>
 
       {result && (
         <div className="mt-2 space-y-3">
           {kpiMetrics && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-              <div className="p-3 bg-white rounded-xl shadow-lg border border-slate-200 border-l-4 border-blue-500">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+              <div className="p-2.5 bg-white rounded-xl shadow-lg border border-slate-200 border-l-4 border-blue-500">
                 <div className="flex items-center justify-between mb-1">
                   <div className="text-xs text-slate-500">年累计循环次数</div>
                   <span className="text-xs">🔄</span>
                 </div>
-                <div className="text-lg md:text-2xl font-semibold text-slate-900">
+                <div className="text-base md:text-xl font-semibold text-slate-900">
                   {kpiMetrics.totalCycles.toFixed(2)}
                 </div>
                 <div className="text-[11px] text-slate-500 mt-1">单位：次/年</div>
+                <div className="text-[11px] text-slate-500 mt-2 text-right">
+                  全年合计等效循环数：{yearEquivalentCycles === 0 ? '-' : Number(yearEquivalentCycles).toFixed(2)} 次
+                </div>
               </div>
-              <div className="p-3 bg-white rounded-xl shadow-lg border border-slate-200 border-l-4 border-emerald-500">
+              <div className="p-2.5 bg-white rounded-xl shadow-lg border border-slate-200 border-l-4 border-emerald-500">
                 <div className="flex items-center justify-between mb-1">
                   <div className="text-xs text-slate-500">月均循环次数</div>
                   <span className="text-xs">📊</span>
                 </div>
-                <div className="text-lg md:text-2xl font-semibold text-slate-900">
+                <div className="text-base md:text-xl font-semibold text-slate-900">
                   {kpiMetrics.avgCycles.toFixed(2)}
                 </div>
                 <div className="text-[11px] text-slate-500 mt-1">单位：次/月</div>
               </div>
-              <div className="p-3 bg-white rounded-xl shadow-lg border border-slate-200 border-l-4 border-orange-500">
+              <div className="p-2.5 bg-white rounded-xl shadow-lg border border-slate-200 border-l-4 border-orange-500">
                 <div className="flex items-center justify-between mb-1">
                   <div className="text-xs text-slate-500">最高月循环次数</div>
                   <span className="text-xs">📈</span>
                 </div>
-                <div className="text-lg md:text-2xl font-semibold text-slate-900">
+                <div className="text-base md:text-xl font-semibold text-slate-900">
                   {kpiMetrics.maxMonth ? kpiMetrics.maxMonth.cycles.toFixed(2) : '--'}
                 </div>
                 <div className="text-[11px] text-slate-500 mt-1">
                   {kpiMetrics.maxMonth?.yearMonth || '—'}（次/月）
                 </div>
               </div>
-              <div className="p-3 bg-white rounded-xl shadow-lg border border-slate-200 border-l-4 border-slate-400">
+              <div className="p-2.5 bg-white rounded-xl shadow-lg border border-slate-200 border-l-4 border-slate-400">
                 <div className="flex items-center justify-between mb-1">
                   <div className="text-xs text-slate-500">最低月循环次数</div>
                   <span className="text-xs">📉</span>
                 </div>
-                <div className="text-lg md:text-2xl font-semibold text-slate-900">
+                <div className="text-base md:text-xl font-semibold text-slate-900">
                   {kpiMetrics.minMonth ? kpiMetrics.minMonth.cycles.toFixed(2) : '--'}
                 </div>
                 <div className="text-[11px] text-slate-500 mt-1">
