@@ -1,5 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { MonthlyTouPrices, Schedule, DateRule, BackendStorageCyclesResponse } from '../types';
+import type {
+  MonthlyTouPrices,
+  Schedule,
+  DateRule,
+  BackendStorageCyclesResponse,
+  BackendTipDischargeSummary,
+} from '../types';
 import type { LoadDataPoint } from '../utils';
 import { computeStorageCycles, type StorageParamsPayload } from '../storageApi';
 
@@ -134,6 +140,22 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
       points: pointsPayload,
     };
 
+    // 简单防呆：无放电窗口或尖价全空时阻止测算，避免算出 0
+    const hasDischarge = Array.isArray(payload.strategySource?.monthlySchedule)
+      && payload.strategySource.monthlySchedule.some((monthRow: any[]) =>
+        Array.isArray(monthRow) && monthRow.some(cell => cell?.op === '放'));
+    const hasAnyPrice = Array.isArray(payload.monthlyTouPrices)
+      && payload.monthlyTouPrices.some(mp => mp && Object.values(mp).some(v => v != null));
+    console.debug('[StorageCycles] payload preview', payload, { hasDischarge, hasAnyPrice });
+    if (!hasDischarge) {
+      setError('当前排程没有放电窗口，请先在排程/逻辑中设置“放”时段后再测算。');
+      return;
+    }
+    if (!hasAnyPrice) {
+      setError('当前电价配置全部为空，请先设置 TOU 电价（含尖/峰/平/谷）。');
+      return;
+    }
+
     try {
       const v = validateParams();
       if (v) { setError(v); return; }
@@ -151,11 +173,89 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
   const monthChartRef = useRef<HTMLDivElement>(null);
   const dayChartRef = useRef<HTMLDivElement>(null);
   const heatmapChartRef = useRef<HTMLDivElement>(null);
+  const tipDayChartRef = useRef<HTMLDivElement>(null);
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
   const [monthlyViewMode, setMonthlyViewMode] = useState<'aggregate' | 'byYear'>('aggregate');
 
   const monthsData = useMemo(() => result?.months || [], [result]);
   const daysData = useMemo(() => result?.days || [], [result]);
+  const tipSummary = useMemo(() => {
+    const rawNullable =
+      (result as any)?.tip_discharge_summary ??
+      (result as any)?.tip_discharge ??
+      (result as any)?.tip;
+    if (!rawNullable) return null;
+    const raw: BackendTipDischargeSummary = rawNullable;
+    const avg = Number(
+      raw.avg_tip_load_kw ??
+      (raw as any)?.avg_kw ??
+      (raw as any)?.avg_load_kw ??
+      (raw as any)?.tip_avg_kw ??
+      0,
+    );
+    const tipHours = Number(
+      raw.tip_hours ??
+      (raw as any)?.hours ??
+      (raw as any)?.duration_hours ??
+      0,
+    );
+    const dischargeCount = Number(
+      raw.discharge_count ??
+      (raw as any)?.cycles ??
+      (raw as any)?.count ??
+      0,
+    );
+    const capacity = Number(
+      (raw.capacity_kwh ?? (raw as any)?.capacity ?? params.capacity_kwh) ?? 0,
+    );
+    const energyNeed = (() => {
+      const v =
+        raw.energy_need_kwh ??
+        (raw as any)?.tip_energy_need_kwh ??
+        (raw as any)?.energy_need;
+      if (v != null) return Number(v);
+      return avg * tipHours;
+    })();
+    const ratioFromBackend = (() => {
+      const v =
+        raw.ratio ??
+        (raw as any)?.tip_ratio ??
+        (raw as any)?.ratio_tip ??
+        null;
+      if (v == null) return null;
+      const num = Number(v);
+      if (!Number.isFinite(num)) return null;
+      return Math.min(1, Math.max(0, num));
+    })();
+    const ratioCalculated =
+      dischargeCount <= 0 || !capacity || tipHours <= 0
+        ? 0
+        : Math.min(1, (capacity * dischargeCount) > 0 ? energyNeed / (capacity * dischargeCount) : 0);
+    return {
+      ratio: ratioFromBackend ?? ratioCalculated,
+      avgTipLoadKw: avg,
+      tipHours,
+      dischargeCount,
+      capacityKwh: capacity,
+      energyNeedKwh: energyNeed,
+      note: raw.note,
+      tipPoints: (raw as any)?.tip_points ?? (raw as any)?.points,
+      dayStats: (raw as any)?.day_stats,
+      monthStats: (raw as any)?.month_stats,
+    };
+  }, [params.capacity_kwh, result]);
+  const tipMonthMap = useMemo(() => {
+    const stats = tipSummary?.monthStats;
+    if (!stats) return [];
+    const arr: Array<number | null> = new Array(12).fill(null);
+    stats.forEach((m) => {
+      const idx = Number(m.month) - 1;
+      if (idx >= 0 && idx < 12 && m.ratio != null) {
+        arr[idx] = Number(m.ratio);
+      }
+    });
+    return arr;
+  }, [tipSummary?.monthStats]);
 
   // 月度曲线：按“月份维度”聚合不同年份（同一月份的 cycles 求和）
   const monthAxisLabels = useMemo(
@@ -320,6 +420,57 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
       monthSecondDischargeRatePct: secondDischargeRatePct,
     };
   }, [daysData, result?.window_month_summary]);
+
+  const avgOrNull = useMemo(
+    () => (vals: Array<number | null>) => {
+      const arr = vals.filter(v => v != null && !Number.isNaN(Number(v))) as number[];
+      if (!arr.length) return null;
+      return arr.reduce((s, v) => s + v, 0) / arr.length;
+    },
+    [],
+  );
+  const avgFirstChargeRate = useMemo(() => avgOrNull(monthFirstChargeRatePct), [avgOrNull, monthFirstChargeRatePct]);
+  const avgFirstDischargeRate = useMemo(() => avgOrNull(monthFirstDischargeRatePct), [avgOrNull, monthFirstDischargeRatePct]);
+  const avgSecondChargeRate = useMemo(() => avgOrNull(monthSecondChargeRatePct), [avgOrNull, monthSecondChargeRatePct]);
+  const avgSecondDischargeRate = useMemo(() => avgOrNull(monthSecondDischargeRatePct), [avgOrNull, monthSecondDischargeRatePct]);
+  const avgTipRatio = useMemo(() => avgOrNull(tipMonthMap), [avgOrNull, tipMonthMap]);
+
+  // KPI 概览卡片：年累计、月均、最高月与最低月
+  const kpiMetrics = useMemo(() => {
+    if (!result) return null;
+    const totalCycles = Number(result.year?.cycles ?? 0);
+
+    const monthList = monthsData
+      .map(m => ({
+        yearMonth: m.year_month,
+        cycles: Number((m as any)?.cycles ?? 0),
+      }))
+      .filter(m => Number.isFinite(m.cycles));
+
+    if (!monthList.length) {
+      return {
+        totalCycles,
+        avgCycles: 0,
+        maxMonth: null as { yearMonth: string; cycles: number } | null,
+        minMonth: null as { yearMonth: string; cycles: number } | null,
+      };
+    }
+
+    let maxMonth = monthList[0];
+    let minMonth = monthList[0];
+    for (const m of monthList) {
+      if (m.cycles > maxMonth.cycles) maxMonth = m;
+      if (m.cycles < minMonth.cycles) minMonth = m;
+    }
+    const avgCycles = monthList.length ? totalCycles / monthList.length : 0;
+
+    return {
+      totalCycles,
+      avgCycles,
+      maxMonth,
+      minMonth,
+    };
+  }, [result, monthsData]);
 
   useEffect(() => {
     if (!monthsData.length) { setSelectedMonth(null); return; }
@@ -512,28 +663,75 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
     return () => { try { chart && chart.dispose && chart.dispose(); } catch { /* ignore */ } };
   }, [heatmapData, heatmapXAxisDays, heatmapYAxisMonths]);
 
+  // 尖放电占比：日度折线
+  useEffect(() => {
+    let chart: any = null;
+    loadECharts().then((echarts: any) => {
+      if (!tipDayChartRef.current || !tipSummary?.dayStats) return;
+      const data = tipSummary.dayStats;
+      chart = echarts.init(tipDayChartRef.current);
+      chart.setOption({
+        tooltip: {
+          trigger: 'axis',
+          formatter: (params: any) => {
+            const p = Array.isArray(params) ? params[0] : params;
+            const val = p?.data?.value ?? p?.data ?? 0;
+            return `${p?.axisValue || ''}<br/>尖占比：${(Number(val) * 100).toFixed(1)}%`;
+          },
+        },
+        grid: { left: 40, right: 10, top: 20, bottom: 30 },
+        xAxis: {
+          type: 'category',
+          data: data.map(d => d.date?.slice(5) || ''),
+          axisLabel: { interval: 'auto', rotate: 45, fontSize: 10 },
+        },
+        yAxis: {
+          type: 'value',
+          min: 0,
+          max: 1,
+          axisLabel: { formatter: (v: number) => `${(v * 100).toFixed(0)}%` },
+        },
+        series: [{
+          type: 'line',
+          data: data.map(d => Number(d.ratio ?? 0)),
+          smooth: true,
+          itemStyle: { color: '#f97316' },
+          areaStyle: { color: 'rgba(249,115,22,0.12)' },
+        }],
+      });
+    }).catch(() => {/* ignore */});
+    return () => { try { chart && chart.dispose && chart.dispose(); } catch { /* ignore */ } };
+  }, [tipSummary?.dayStats, tipSummary?.ratio]);
+
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={() => setFileName(fileRef.current?.files?.[0]?.name || '')} />
-        <button className="px-3 py-1.5 rounded bg-blue-600 text-white text-sm" onClick={() => fileRef.current?.click()}>
-          选择负荷文件
-        </button>
-        <span className="text-sm text-slate-600">{fileName || '未选择文件'}</span>
-        <button className="ml-2 px-3 py-1.5 rounded bg-green-600 text-white text-sm" onClick={handleUpload} disabled={loading}>
-          {loading ? '计算中…' : '开始测算'}
-        </button>
-      </div>
+    <div className="space-y-8">
+      <div className="p-6 bg-white rounded-xl shadow-lg space-y-4">
+        <div className="flex items-center gap-2">
+          <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={() => setFileName(fileRef.current?.files?.[0]?.name || '')} />
+          <button className="px-3 py-1.5 rounded bg-blue-600 text-white text-sm" onClick={() => fileRef.current?.click()}>
+            选择负荷文件
+          </button>
+          <span className="text-sm text-slate-600">{fileName || '未选择文件'}</span>
+          <button className="ml-2 px-3 py-1.5 rounded bg-green-600 text-white text-sm" onClick={handleUpload} disabled={loading}>
+            {loading ? '计算中…' : '开始测算'}
+          </button>
+        </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-        <label className="flex items-center gap-2">
-          <input type="checkbox" checked={useAnalyzedData} onChange={e => setUseAnalyzedData(e.target.checked)} />
-          <span>使用“负荷分析”页已上传数据</span>
-        </label>
-      </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={useAnalyzedData} onChange={e => setUseAnalyzedData(e.target.checked)} />
+            <span>使用“负荷分析”页已上传数据</span>
+          </label>
+          <div className="text-xs text-slate-500">
+            {hasExternalData
+              ? '勾选后将复用全局已清洗的小时级负荷数据，无需在本页重复上传。'
+              : '当前暂无可复用的“负荷分析”页数据，仅支持通过本页上传负荷文件。'}
+          </div>
+        </div>
 
-      {/* 参数表单（简化） */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+        {/* 参数表单（简化） */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
         <label className="flex flex-col gap-1">
           <span>容量 (kWh)</span>
           <input className="border rounded px-2 py-1" type="number" step="1" min="1" value={params.capacity_kwh}
@@ -599,12 +797,48 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
             <option value="sample">sample</option>
           </select>
         </label>
-      </div>
+        </div>
 
-      {error && <div className="text-red-600 text-sm">{error}</div>}
+        {error && <div className="text-red-600 text-sm">{error}</div>}
+      </div>
 
       {result && (
         <div className="mt-2 space-y-3">
+          {kpiMetrics && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+              <div className="p-3 bg-white rounded-xl shadow-lg border border-slate-200">
+                <div className="text-xs text-slate-500 mb-1">年累计循环次数</div>
+                <div className="text-lg md:text-2xl font-semibold text-slate-900">
+                  {kpiMetrics.totalCycles.toFixed(2)}
+                </div>
+              </div>
+              <div className="p-3 bg-white rounded-xl shadow-lg border border-slate-200">
+                <div className="text-xs text-slate-500 mb-1">月均循环次数</div>
+                <div className="text-lg md:text-2xl font-semibold text-slate-900">
+                  {kpiMetrics.avgCycles.toFixed(2)}
+                </div>
+              </div>
+              <div className="p-3 bg-white rounded-xl shadow-lg border border-slate-200">
+                <div className="text-xs text-slate-500 mb-1">最高月循环次数</div>
+                <div className="text-lg md:text-2xl font-semibold text-slate-900">
+                  {kpiMetrics.maxMonth ? kpiMetrics.maxMonth.cycles.toFixed(2) : '--'}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">
+                  {kpiMetrics.maxMonth?.yearMonth || '—'}
+                </div>
+              </div>
+              <div className="p-3 bg-white rounded-xl shadow-lg border border-slate-200">
+                <div className="text-xs text-slate-500 mb-1">最低月循环次数</div>
+                <div className="text-lg md:text-2xl font-semibold text-slate-900">
+                  {kpiMetrics.minMonth ? kpiMetrics.minMonth.cycles.toFixed(2) : '--'}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">
+                  {kpiMetrics.minMonth?.yearMonth || '—'}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* 循环有效/等效统计表格（按月 + 年度汇总） */}
           <div className="p-3 border rounded-xl bg-white shadow-sm overflow-x-auto">
             <div className="flex items-center justify-between mb-2">
@@ -627,6 +861,7 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
                   <th className="px-3 py-2 text-right font-medium text-slate-600">第一次充电满放率（%）</th>
                   <th className="px-3 py-2 text-right font-medium text-slate-600">第二次充电满充率（%）</th>
                   <th className="px-3 py-2 text-right font-medium text-slate-600">第二次充电满放率（%）</th>
+                  <th className="px-3 py-2 text-right font-medium text-slate-600">平均尖占比（%）</th>
                 </tr>
               </thead>
               <tbody>
@@ -669,6 +904,11 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
                     avgDailyCycles == null || avgDailyCycles === 0
                       ? '-'
                       : Number(avgDailyCycles).toFixed(3);
+                  const tipRatio = tipMonthMap[i];
+                  const tipRatioStr =
+                    tipRatio == null
+                      ? '-'
+                      : `${(tipRatio * 100).toFixed(1)}%`;
                   return (
                     <tr
                       key={monthLabel}
@@ -699,6 +939,9 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
                       <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
                         {sDischargeStr}
                       </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
+                        {tipRatioStr}
+                      </td>
                     </tr>
                   );
                 })}
@@ -723,89 +966,146 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
                       : Number(yearEquivalentCycles).toFixed(3)}
                   </td>
                   {/* 目前年度满充/满放率不做汇总，保持为空 */}
-                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">-</td>
-                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">-</td>
-                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">-</td>
-                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">-</td>
+                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
+                    {avgFirstChargeRate == null ? '-' : `${avgFirstChargeRate.toFixed(3)}%`}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
+                    {avgFirstDischargeRate == null ? '-' : `${avgFirstDischargeRate.toFixed(3)}%`}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
+                    {avgSecondChargeRate == null ? '-' : `${avgSecondChargeRate.toFixed(3)}%`}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
+                    {avgSecondDischargeRate == null ? '-' : `${avgSecondDischargeRate.toFixed(3)}%`}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
+                    {avgTipRatio == null ? '-' : `${(avgTipRatio * 100).toFixed(1)}%`}
+                  </td>
                 </tr>
               </tbody>
             </table>
           </div>
 
-          {/* 图表区：左侧月度曲线 + 全年日度热力图，右侧单月日度曲线与报表/QC */}
-          <div className="grid grid-cols-1 xl:grid-cols-[2fr_minmax(0,1fr)] gap-4">
-            <div className="space-y-4">
-              <div className="p-3 border rounded bg-white">
-                <div className="flex items-center justify-between mb-1">
-                  <div className="text-sm font-semibold">月度充放次数（曲线）</div>
-                  <div className="text-xs flex items-center gap-1">
-                    <span>视图</span>
-                    <select
-                      className="border rounded px-2 py-0.5"
-                      value={monthlyViewMode}
-                      onChange={e => setMonthlyViewMode(e.target.value as 'aggregate' | 'byYear')}
-                    >
-                      <option value="aggregate">按月合计</option>
-                      <option value="byYear">按年拆分</option>
-                    </select>
-                  </div>
+          {/* 图表区：四块图统一为 2×2 网格，尺寸协调 */}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            {/* 月度充放次数（曲线） */}
+            <div className="p-3 border rounded bg-white flex flex-col">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-semibold">月度充放次数（曲线）</div>
+                <div className="text-xs flex items-center gap-1">
+                  <span>视图</span>
+                  <select
+                    className="border rounded px-2 py-0.5"
+                    value={monthlyViewMode}
+                    onChange={e => setMonthlyViewMode(e.target.value as 'aggregate' | 'byYear')}
+                  >
+                    <option value="aggregate">按月合计</option>
+                    <option value="byYear">按年拆分</option>
+                  </select>
                 </div>
-                <div ref={monthChartRef} style={{ width: '100%', height: 260 }} />
               </div>
-              <div className="p-3 border rounded bg-white">
-                <div className="text-sm font-semibold mb-1">全年每日充放次数热力图</div>
-                <div ref={heatmapChartRef} style={{ width: '100%', height: 320 }} />
-                <div className="mt-1 text-xs text-slate-500">
-                  第一行对应 1 月、第二行对应 2 月，横轴为 1–31 日，每个格子表示当日的充放次数。
+              <div ref={monthChartRef} style={{ width: '100%', height: 280 }} />
+            </div>
+
+            {/* 单月日度次数曲线 */}
+            <div className="p-3 border rounded bg-white flex flex-col">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-semibold mb-1">单月日度次数曲线</div>
+                <div className="text-xs flex items-center gap-1">
+                  <span>月份</span>
+                  <select
+                    className="border rounded px-2 py-0.5"
+                    value={selectedMonth || ''}
+                    onChange={e => setSelectedMonth(e.target.value)}
+                  >
+                    {monthsData.map(m => (
+                      <option key={m.year_month} value={m.year_month}>{m.year_month}</option>
+                    ))}
+                  </select>
                 </div>
+              </div>
+              <div ref={dayChartRef} style={{ width: '100%', height: 280 }} />
+            </div>
+
+            {/* 全年每日充放次数热力图 */}
+            <div className="p-3 border rounded bg-white flex flex-col">
+              <div className="text-sm font-semibold mb-2">全年每日充放次数热力图</div>
+              <div ref={heatmapChartRef} style={{ width: '100%', height: 280 }} />
+              <div className="mt-1 text-xs text-slate-500">
+                第一行对应 1 月、第二行对应 2 月，横轴为 1–31 日，每个格子表示当日的充放次数。
               </div>
             </div>
-            <div className="space-y-3">
-              <div className="p-3 border rounded bg-white">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm font-semibold mb-1">单月日度次数曲线</div>
-                  <div className="text-xs flex items-center gap-1">
-                    <span>月份</span>
-                    <select
-                      className="border rounded px-2 py-0.5"
-                      value={selectedMonth || ''}
-                      onChange={e => setSelectedMonth(e.target.value)}
-                    >
-                      {monthsData.map(m => (
-                        <option key={m.year_month} value={m.year_month}>{m.year_month}</option>
-                      ))}
-                    </select>
+
+            {/* 尖放电占比 */}
+            <div className="p-3 border rounded bg-white flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-sm font-semibold text-slate-800">尖放电占比</div>
+                  {tipSummary && (
+                    <div className="text-[11px] text-slate-500">
+                      放电次数：{tipSummary.dischargeCount}
+                    </div>
+                  )}
+                </div>
+                {tipSummary ? (
+                  <>
+                    <div className="text-3xl font-semibold text-slate-900">
+                      {(tipSummary.ratio * 100).toFixed(1)}%
+                    </div>
+                    <div className="text-xs text-slate-600 mt-2 leading-relaxed">
+                      公式：{Number.isFinite(tipSummary.avgTipLoadKw) ? tipSummary.avgTipLoadKw.toFixed(1) : '--'} kW × {Number.isFinite(tipSummary.tipHours) ? tipSummary.tipHours.toFixed(2) : '--'}h ÷ ({Number.isFinite(tipSummary.capacityKwh) ? tipSummary.capacityKwh : '--'} kWh × {tipSummary.dischargeCount || 1})
+                    </div>
+                    <div className="text-xs text-slate-600 mt-1">
+                      尖能量需求：{Number.isFinite(tipSummary.energyNeedKwh) ? tipSummary.energyNeedKwh.toFixed(1) : '--'} kWh
+                    </div>
+                    {tipSummary.dischargeCount === 0 && (
+                      <div className="text-xs text-orange-600 mt-1">
+                        放电次数为 0，按规则占比为 0%
+                      </div>
+                    )}
+                    <div className="mt-3">
+                      <div className="text-xs text-slate-600 mb-1">日尖占比</div>
+                      <div ref={tipDayChartRef} style={{ width: '100%', height: 180 }} />
+                    </div>
+                    {tipSummary.note && (
+                      <div className="mt-2 text-[11px] text-slate-500 leading-relaxed">
+                        {tipSummary.note}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-xs text-slate-500">
+                    暂无尖放电占比数据，后端返回 tip_discharge_summary 后自动展示。
                   </div>
-                </div>
-                <div ref={dayChartRef} style={{ width: '100%', height: 260 }} />
+                )}
               </div>
-
-              {result.excel_path && (
-                <div className="p-3 border rounded bg-white text-sm">
-                  报表：
-                  <a
-                    href={result.excel_path}
-                    className="text-blue-600 underline"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    下载 Excel 详细结果
-                  </a>
-                </div>
-              )}
-
-              {!!result.qc?.notes?.length && (
-                <div className="p-3 border rounded bg白">
-                  <details>
-                    <summary className="cursor-pointer text-slate-700 text-sm">QC 提示（展开查看）</summary>
-                    <ul className="list-disc ml-5 text-sm text-slate-600 mt-1">
-                      {result.qc.notes.map((n, idx) => (<li key={idx}>{n}</li>))}
-                    </ul>
-                  </details>
-                </div>
-              )}
             </div>
           </div>
+
+          {result.excel_path && (
+            <div className="p-3 border rounded bg-white text-sm">
+              报表：
+              <a
+                href={result.excel_path}
+                className="text-blue-600 underline"
+                target="_blank"
+                rel="noreferrer"
+              >
+                下载 Excel 详细结果
+              </a>
+            </div>
+          )}
+
+          {!!result.qc?.notes?.length && (
+            <div className="p-3 border rounded bg-white">
+              <details>
+                <summary className="cursor-pointer text-slate-700 text-sm">QC 提示（展开查看）</summary>
+                <ul className="list-disc ml-5 text-sm text-slate-600 mt-1">
+                  {result.qc.notes.map((n, idx) => (<li key={idx}>{n}</li>))}
+                </ul>
+              </details>
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -449,6 +449,162 @@ def build_price_series(
 
 
 # -------------------------
+# 尖段放电占比（基于 TOU=尖 且 op=放）
+# -------------------------
+
+def compute_tip_discharge_summary(
+    series_15m: pd.DataFrame,
+    price_series: Optional[pd.DataFrame],
+    daily_ops: Dict[str, List[str]],
+    daily_masks: Dict[str, dict] | None,
+    storage_cfg: Dict,
+) -> Optional[dict]:
+    """计算尖段放电占比：仅统计 TOU=尖 且运行逻辑 op=放 的 15min 点。
+
+    公式：占比 = min(1, 尖段能量需求 / (容量 × 放电次数))
+      - 能量需求 = 尖段平均负荷 × 尖段时长（小时）
+      - 放电次数：对有尖段的日期，统计 c1/c2 放电窗口中与尖小时有交集的窗口数，求平均
+    """
+    if series_15m is None or price_series is None:
+        return None
+    if series_15m.empty or price_series.empty:
+        logger.debug("[tip_summary] empty series or price_series")
+        return None
+    s = series_15m.copy()
+    p = price_series.copy()
+    if not isinstance(s.index, pd.DatetimeIndex):
+        s.index = pd.to_datetime(s.index, errors="coerce")
+    if not isinstance(p.index, pd.DatetimeIndex):
+        p.index = pd.to_datetime(p.index, errors="coerce")
+    s = s.dropna(subset=["load_kw"]).sort_index()
+    p = p.dropna(subset=["tier"]).sort_index()
+    if s.empty or p.empty:
+        return None
+
+    df = s.join(p[["tier"]], how="inner")
+
+    def _op_for_ts(ts: pd.Timestamp) -> Optional[str]:
+        day_key = ts.strftime("%Y-%m-%d")
+        ops = daily_ops.get(day_key)
+        if not ops:
+            return None
+        h = ts.hour
+        return ops[h] if 0 <= h < len(ops) else None
+
+    df["op"] = [ _op_for_ts(ts) for ts in df.index ]
+    df_tip = df[(df["tier"] == "尖") & (df["op"] == "放")]
+    if df_tip.empty:
+        logger.info("[tip_summary] no尖放点: total_points=%s tip_points=0", len(df))
+        cap = float(storage_cfg.get("capacity_kwh", 0) or 0)
+        return {
+          "avg_tip_load_kw": 0.0,
+          "tip_hours": 0.0,
+          "energy_need_kwh": 0.0,
+          "discharge_count": 0.0,
+          "capacity_kwh": cap,
+          "ratio": 0.0,
+          "tip_points": [],
+          "note": "无 TOU=尖 且运行逻辑=放 的 15 分钟点，尖放电占比记为 0",
+        }
+
+    day_keys = sorted(set(df_tip.index.date))
+    cap = float(storage_cfg.get("capacity_kwh", 0) or 0)
+
+    day_stats: List[dict] = []
+    for dk in day_keys:
+        day_str = pd.Timestamp(dk).strftime("%Y-%m-%d")
+        day_sub = df_tip.loc[df_tip.index.date == dk]
+        avg_day = float(day_sub["load_kw"].mean()) if not day_sub.empty else 0.0
+        tip_hours_day = float(len(day_sub) * 0.25)
+        energy_day = avg_day * tip_hours_day
+
+        tip_hour_set = set(day_sub.index.hour)
+        masks = (daily_masks or {}).get(day_str, {})
+        cnt = 0
+        for win in ("c1", "c2"):
+            hours = masks.get(win, {}).get("discharge_hours", []) or []
+            if set(int(h) for h in hours) & tip_hour_set:
+                cnt += 1
+        discharge_count_day = float(cnt)
+        if discharge_count_day <= 0 or cap <= 0 or tip_hours_day <= 0:
+            ratio_day = 0.0
+        else:
+            ratio_day = min(1.0, energy_day / (cap * discharge_count_day))
+
+        day_stats.append({
+            "date": day_str,
+            "avg_load_kw": avg_day,
+            "tip_hours": tip_hours_day,
+            "energy_need_kwh": energy_day,
+            "discharge_count": discharge_count_day,
+            "ratio": ratio_day,
+        })
+
+    # 聚合为均值口径，防止跨天累加导致占比 100%
+    if not day_stats:
+        avg_tip_load = 0.0
+        tip_hours = 0.0
+        energy_need = 0.0
+        discharge_count = 0.0
+        ratio = 0.0
+        month_stats: List[dict] = []
+    else:
+        avg_tip_load = float(sum(d["avg_load_kw"] for d in day_stats) / len(day_stats))
+        tip_hours = float(sum(d["tip_hours"] for d in day_stats) / len(day_stats))
+        energy_need = float(sum(d["energy_need_kwh"] for d in day_stats) / len(day_stats))
+        discharge_count = float(sum(d["discharge_count"] for d in day_stats) / len(day_stats))
+        ratio = float(sum(d["ratio"] for d in day_stats) / len(day_stats))
+        month_bucket: Dict[int, List[float]] = {}
+        for d in day_stats:
+            try:
+                m = int(str(d.get("date", ""))[5:7])
+            except Exception:
+                continue
+            if 1 <= m <= 12:
+                month_bucket.setdefault(m, []).append(float(d["ratio"]))
+        month_stats = []
+        for m in range(1, 13):
+            arr = month_bucket.get(m, [])
+            month_stats.append({"month": m, "ratio": float(sum(arr) / len(arr)) if arr else 0.0})
+
+    # 尖段点位列表（仅时间与负荷，避免返回过大文本）
+    # 裁剪点位，避免体积过大
+    tip_points = [
+        {"time": ts.strftime("%Y-%m-%d %H:%M"), "load_kw": float(val) if pd.notna(val) else 0.0}
+        for ts, val in df_tip["load_kw"].items()
+    ][:200]
+
+    note = (
+        f"基于 TOU=尖 且运行逻辑=放 的 15 分钟点，共 {len(df_tip)} 点，{len(day_keys)} 天；"
+        f"按“逐日平均”口径汇总，防止跨天累加导致占比拉满。"
+    )
+    logger.info(
+        "[tip_summary] points=%s days=%s avg=%.3f hours=%.2f energy=%.3f dis_cnt=%.3f cap=%.3f ratio=%s",
+        len(df_tip),
+        len(day_keys),
+        avg_tip_load,
+        tip_hours,
+        energy_need,
+        discharge_count,
+        cap,
+        ratio,
+    )
+
+    return {
+        "avg_tip_load_kw": avg_tip_load,
+        "tip_hours": tip_hours,
+        "energy_need_kwh": energy_need,
+        "discharge_count": discharge_count,
+        "capacity_kwh": cap,
+        "ratio": ratio,
+        "tip_points": tip_points,
+        "note": note,
+        "day_stats": day_stats,
+        "month_stats": month_stats,
+    }
+
+
+# -------------------------
 # window_avg 计算（physics 默认）
 # -------------------------
 

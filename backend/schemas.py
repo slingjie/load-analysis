@@ -83,6 +83,26 @@ class StorageCyclesYear(BaseModel):
     cycles: float = Field(default=0.0, description="年度累计次数（占位）")
 
 
+class TipDischargePoint(BaseModel):
+    """尖段采样点（可选，用于前端小图/表格）"""
+    time: str = Field(description="HH:mm 或带日期的时间字符串")
+    load_kw: float = Field(description="尖段负荷（kW）")
+
+
+class TipDischargeSummary(BaseModel):
+    """尖段放电占比汇总"""
+    avg_tip_load_kw: float = Field(default=0.0, description="尖时段负荷均值（kW）")
+    tip_hours: float = Field(default=0.0, description="尖时段总时长（小时）")
+    discharge_count: float = Field(default=0.0, description="放电次数（支持非整数均值）")
+    capacity_kwh: float | None = Field(default=None, description="储能容量（kWh）")
+    energy_need_kwh: float | None = Field(default=None, description="尖段能量需求（kWh）")
+    ratio: float | None = Field(default=None, description="尖放电占比（0-1）")
+    tip_points: list[TipDischargePoint] | None = Field(default=None, description="尖段采样点列表")
+    note: str | None = Field(default=None, description="说明或口径备注")
+    day_stats: list[dict] | None = Field(default=None, description="日度尖占比 [{date, avg_load_kw, tip_hours, energy_need_kwh, discharge_count, ratio}]")
+    month_stats: list[dict] | None = Field(default=None, description="1-12 月平均尖占比 [{month, ratio}]")
+
+
 class StorageQC(BaseModel):
     """质量与提示指标（占位版）"""
     notes: List[str] = Field(default_factory=list, description="提示或说明")
@@ -120,4 +140,9 @@ class StorageCyclesResponse(BaseModel):
     window_month_summary: Optional[List[StorageWindowMonthSummary]] = Field(
         default=None,
         description="[{year_month, first_charge_cycles, first_discharge_cycles, second_charge_cycles, second_discharge_cycles}]",
+    )
+    # 可选：尖段放电占比汇总
+    tip_discharge_summary: Optional[TipDischargeSummary] = Field(
+        default=None,
+        description="尖段放电占比汇总",
     )

@@ -124,6 +124,20 @@ export interface BackendStorageCyclesYear {
   cycles: number;
 }
 
+// 尖段放电占比汇总
+export interface BackendTipDischargeSummary {
+  avg_tip_load_kw: number;            // 尖时段负荷均值（kW）
+  tip_hours: number;                  // 尖时段时长（小时）
+  discharge_count: number;            // 当前时段放电次数
+  capacity_kwh?: number;              // 储能容量（若未返回则前端可用参数回填）
+  energy_need_kwh?: number;           // 尖段能量需求，若未给出可用 avg×hours 计算
+  ratio?: number;                     // 后端直接给出的占比（0-1，可选）
+  tip_points?: Array<{ time: string; load_kw: number }>; // 尖段点位，便于前端小图或列表
+  note?: string;                      // 备注或计算口径说明
+  day_stats?: Array<{ date: string; avg_load_kw: number; tip_hours: number; energy_need_kwh: number; discharge_count: number; ratio: number }>;
+  month_stats?: Array<{ month: number; ratio: number }>;
+}
+
 export interface BackendStorageQC {
   notes: string[];
   missing_prices: number;
@@ -151,4 +165,6 @@ export interface BackendStorageCyclesResponse {
   excel_path: string | null;
   // 可选：后端按 Window_debug 聚合好的月度拆分结果
   window_month_summary?: BackendStorageWindowMonthSummary[];
+  // 可选：尖段放电占比汇总（前端可展示卡片）
+  tip_discharge_summary?: BackendTipDischargeSummary;
 }

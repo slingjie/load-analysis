@@ -1,0 +1,2 @@
+﻿year_cycles,months_sum_cycles,months_nonzero,months_total,days_nonzero,days_total,missing_prices,merged_segments,limit_mode,transformer_limit_kw
+482.25584772946854,482.25584772946854,10,12,286,348,0,0,monthly_demand_max,

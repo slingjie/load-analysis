@@ -179,7 +179,7 @@ async def compute_storage_cycles(
     # TOU mapping (for QC)
     monthly_prices = payload_obj.get("monthlyTouPrices") if isinstance(payload_obj, dict) else None
     try:
-        _price_series, missing_points_cnt = cycles_svc.build_price_series(
+        price_series, missing_points_cnt = cycles_svc.build_price_series(
             series_15m,
             monthly_schedule=monthly_schedule,
             date_rules=date_rules,
@@ -227,6 +227,19 @@ async def compute_storage_cycles(
         merged_segments=int(merged_cnt) if 'merged_cnt' in locals() else 0,
         missing_prices=int(missing_points_cnt),
     )
+
+    # 尖段放电占比（若有尖档且放电）
+    try:
+        tip_summary_dict = cycles_svc.compute_tip_discharge_summary(
+            series_15m,
+            price_series if "price_series" in locals() else None,
+            daily_ops=daily_ops if "daily_ops" in locals() else {},
+            daily_masks=daily_masks if "daily_masks" in locals() else {},
+            storage_cfg=storage_cfg,
+        ) if "price_series" in locals() else None
+    except Exception as exc:
+        tip_summary_dict = None
+        qc.notes.append(f"tip summary failed: {exc}")
 
     # 基于 window_debug 汇总 Window 月度统计（C1/C2 + charge/discharge）
     window_month_summary: list[StorageWindowMonthSummary] = []
@@ -334,4 +347,5 @@ async def compute_storage_cycles(
         qc=qc,
         excel_path=excel_rel,
         window_month_summary=window_month_summary or None,
+        tip_discharge_summary=tip_summary_dict,
     )
