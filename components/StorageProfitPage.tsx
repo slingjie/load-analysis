@@ -32,6 +32,7 @@ interface StorageProfitPageProps {
     dateRules: DateRule[];
     prices: MonthlyTouPrices;
   };
+                color: '#000',
   externalCleanedData?: LoadDataPoint[] | null;
   // 预留：可由 StorageCycles 页将最近一次结果透传进来，用于展示年度汇总
   storageCyclesResult?: BackendStorageCyclesResponse | null;
@@ -253,6 +254,7 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
         billSaved: delta,
       };
     }).filter((row): row is {
+                color: '#000',
       id: string;
       name: string;
       energyOriginal: number;
@@ -270,6 +272,8 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
     const rows: {
       key: string;
       label: string;
+      revenue: number;
+      cost: number;
       discharge: number;
       charge: number;
       profit: number;
@@ -304,6 +308,8 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
       rows.push({
         key: ym || String(index + 1),
         label,
+        revenue: main.revenue ?? 0,
+        cost: main.cost ?? 0,
         discharge: main.discharge_energy_kwh ?? 0,
         charge: main.charge_energy_kwh ?? 0,
         profit: main.profit ?? 0,
@@ -318,6 +324,8 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
       rows.push({
         key: 'year',
         label: yearLabel,
+        revenue: yearMain.revenue ?? 0,
+        cost: yearMain.cost ?? 0,
         discharge: yearMain.discharge_energy_kwh ?? 0,
         charge: yearMain.charge_energy_kwh ?? 0,
         profit: yearMain.profit ?? 0,
@@ -333,6 +341,9 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
   const combinedChartRef = useRef<HTMLDivElement | null>(null);
   const [showOriginal, setShowOriginal] = useState(true);
   const [showWithStorage, setShowWithStorage] = useState(true);
+
+  // 月度净收益条形图容器
+  const monthlyChartRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!curvesData || !combinedChartRef.current) return;
@@ -432,6 +443,163 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
     };
   }, [curvesData, chartOriginalData, chartWithStorageData, showOriginal, showWithStorage]);
 
+  // 月度 revenue / cost / profit 正负条形图
+  useEffect(() => {
+    if (!monthlyChartRef.current || monthlySummaryRows.length === 0) return;
+
+    // 仅使用月份行，不包含“全年”汇总行
+    const monthRows = monthlySummaryRows.filter((row) => row.key !== 'year');
+    if (monthRows.length === 0) return;
+
+    let disposed = false;
+    let chart: any = null;
+
+    loadECharts()
+      .then((echarts: any) => {
+        if (disposed || !monthlyChartRef.current) return;
+
+        chart = echarts.init(monthlyChartRef.current);
+
+        // 为了让纵坐标从 1 月到 12 月自上而下排列，这里对数组做一次反转
+        const categories = monthRows.map((row) => row.label).reverse();
+        const profits = monthRows.map((row) => row.profit).reverse();
+        const revenues = monthRows.map((row) => row.revenue).reverse();
+        const costs = monthRows.map((row) => -Math.abs(row.cost)).reverse();
+
+        const option = {
+          tooltip: {
+            trigger: 'axis',
+            axisPointer: { type: 'shadow' },
+            valueFormatter: (val: any) =>
+              val == null || Number.isNaN(Number(val))
+                ? '-'
+                : `${Number(val).toFixed(2)} 元`,
+          },
+          legend: {
+            top: 0,
+            data: ['净收益', '收入', '成本'],
+          },
+          // 调整网格留白，让图表横向更舒展
+          grid: { left: 60, right: 40, top: 60, bottom: 60 },
+          xAxis: {
+            name: '← 成本 (cost)   收入 (revenue)、净收益 (profit) →',
+            nameLocation: 'middle',
+            nameGap: 28,
+            min: -12000,  // 左侧（成本方向）留的范围相对小
+            max: 30000,   // 右侧（收入/净收益）留的范围更大
+            axisLabel: {
+              formatter: (value: number) => `${value} 元`,
+            },
+            splitLine: {
+              show: true,
+              lineStyle: { type: 'dashed', color: '#e5e7eb' },
+            },
+          },
+          yAxis: {
+            type: 'category',
+            axisTick: { show: false },
+            data: categories,
+            // 调大类目间距，避免条形图上下靠得太紧
+            axisLabel: {
+              margin: 10,
+            },
+          },
+          series: [
+            {
+              name: '净收益',
+              type: 'bar',
+              barWidth: 15,
+              barCategoryGap: '80%',
+              barGap: '0%',
+              label: {
+                show: true,
+                position: 'insideRight',
+                formatter: (params: any) =>
+                  params.value == null || Number.isNaN(Number(params.value))
+                    ? ''
+                    : `${Number(params.value).toFixed(0)} 元`,
+              },
+              emphasis: { focus: 'series' },
+              itemStyle: {
+                color: '#22c55e',
+              },
+              data: profits,
+            },
+            {
+              name: '收入',
+              type: 'bar',
+              stack: 'Total',
+              barWidth: 5,
+              barCategoryGap: '80%',
+              label: {
+                show: true,
+                position: 'insideRight',
+                color: '#000000',
+                formatter: (params: any) =>
+                  params.value == null || Number.isNaN(Number(params.value))
+                    ? ''
+                    : `${Number(params.value).toFixed(0)} 元`,
+              },
+              emphasis: { focus: 'series' },
+              itemStyle: {
+                color: '#3b82f6',
+              },
+              data: revenues,
+            },
+            {
+              name: '成本',
+              type: 'bar',
+              stack: 'Total',
+              barWidth: 5,
+              barGap: '0%',
+              label: {
+                show: true,
+                position: 'left',
+                formatter: (params: any) =>
+                  params.value == null || Number.isNaN(Number(params.value))
+                    ? ''
+                    : `${Math.abs(Number(params.value)).toFixed(0)} 元`,
+              },
+              emphasis: { focus: 'series' },
+              itemStyle: {
+                color: '#ef4444',
+              },
+              data: costs,
+            },
+          ],
+        };
+
+        chart.setOption(option, true);
+
+        const onResize = () => {
+          try {
+            chart && chart.resize();
+          } catch {
+            // ignore
+          }
+        };
+        window.addEventListener('resize', onResize);
+        (chart as any)._cleanup = onResize;
+      })
+      .catch((e: any) => {
+        console.error('[StorageProfitPage] 加载月度条形图失败', e);
+      });
+
+    return () => {
+      disposed = true;
+      try {
+        const c: any = chart;
+        const handler = c?._cleanup;
+        if (handler) {
+          window.removeEventListener('resize', handler);
+        }
+        if (c && !c.isDisposed()) c.dispose();
+      } catch {
+        // ignore
+      }
+    };
+  }, [monthlySummaryRows]);
+
     return (
     <div className="space-y-6">
       <div id="section-profit-intro" className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 space-y-3">
@@ -518,6 +686,13 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
                 ))}
               </tbody>
             </table>
+          </div>
+
+          <div className="mt-4">
+            <div className="mb-2 text-xs text-slate-500">
+              月度净收益正负条形图（绿色为盈利月份，红色为亏损月份）
+            </div>
+            <div ref={monthlyChartRef} style={{ width: '100%', height: 460 }} />
           </div>
         </div>
       )}
