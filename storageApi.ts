@@ -1,4 +1,4 @@
-import type { BackendStorageCyclesResponse, MonthlyTouPrices } from './types';
+import type { BackendStorageCyclesResponse, BackendStorageCurvesResponse, MonthlyTouPrices } from './types';
 
 const BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || '').replace(/\/$/, '');
 
@@ -75,4 +75,47 @@ export const computeStorageCycles = async (
   }
 
   return result as BackendStorageCyclesResponse;
+};
+
+export const fetchStorageCurves = async (
+  payload: StorageParamsPayload,
+  date: string,
+): Promise<BackendStorageCurvesResponse> => {
+  const url = `${BASE_URL}/api/storage/cycles/curves`;
+  console.debug('[storageApi] POST', url, { base: BASE_URL, date });
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ payload, date }),
+  });
+
+  const contentType = response.headers.get('content-type') || '';
+  let result: any = null;
+  let rawText: string | null = null;
+  try {
+    if (contentType.includes('application/json')) {
+      result = await response.json().catch(() => null);
+    } else {
+      rawText = await response.text().catch(() => null);
+      try { result = rawText ? JSON.parse(rawText) : null; } catch { /* ignore */ }
+    }
+  } catch (e) {
+    // ignore parse errors
+  }
+
+  if (!response.ok) {
+    const detail = result?.detail || rawText || `${response.status} ${response.statusText}` || '获取储能收益曲线失败，请稍后重试。';
+    console.error('[storageApi] fetchStorageCurves failed', {
+      url,
+      status: response.status,
+      statusText: response.statusText,
+      detail,
+      payload,
+      rawText,
+    });
+    throw new Error(detail);
+  }
+
+  return result as BackendStorageCurvesResponse;
 };

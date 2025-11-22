@@ -1,11 +1,12 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import type { Schedule, TierId, DateRule, OperatingLogicId, Configuration, CellData, BackendAnalysisMeta, BackendQualityReport, MonthlyTouPrices } from './types';
+import type { Schedule, TierId, DateRule, OperatingLogicId, Configuration, CellData, BackendAnalysisMeta, BackendQualityReport, MonthlyTouPrices, BackendStorageCyclesResponse } from './types';
 import { INITIAL_APP_STATE, VALID_OP_LOGIC_IDS, VALID_TIER_IDS } from './constants';
 import * as api from './api';
 import { exportScheduleToExcel } from './utils';
 import * as XLSX from 'xlsx';
 import type { LoadDataPoint } from './utils';
 import { analyzeLoadFile } from './loadApi';
+import type { StorageParamsPayload } from './storageApi';
 
 
 // Components
@@ -21,6 +22,7 @@ import { LoadAnalysisPage } from './components/LoadAnalysisPage';
 import { EnergyMatrixPage } from './components/EnergyMatrixPage';
 import { QualityReportPage } from './components/QualityReportPage';
 import { StorageCyclesPage } from './components/StorageCyclesPage';
+import { StorageProfitPage } from './components/StorageProfitPage';
 import { PriceEditorPage } from './components/PriceEditorPage';
 import { FloatingSectionNav, type SectionItem } from './components/FloatingSectionNav';
 import { useScrollSpy } from './hooks/useScrollSpy';
@@ -60,7 +62,12 @@ const EditModeSelector: React.FC<{
 
 const App: React.FC = () => {
   // --- Page State ---
-  const [currentPage, setCurrentPage] = useState<'editor' | 'price' | 'analysis' | 'matrix' | 'quality' | 'storage'>('editor');
+  const [currentPage, setCurrentPage] = useState<'editor' | 'price' | 'analysis' | 'matrix' | 'quality' | 'storage' | 'profit'>('editor');
+  const [profitSelectedDate, setProfitSelectedDate] = useState<string | null>(null);
+  const [lastStorageRun, setLastStorageRun] = useState<{
+    payload: StorageParamsPayload;
+    response: BackendStorageCyclesResponse;
+  } | null>(null);
   
   // --- Configuration State ---
   const [configurations, setConfigurations] = useState<{id: string, name: string}[]>([]);
@@ -124,6 +131,14 @@ const App: React.FC = () => {
               { id: 'section-quality-note', title: '本页说明' },
             ]
           : [ { id: 'section-quality-note', title: '本页说明' } ];
+      case 'profit':
+        return [
+          { id: 'section-profit-intro', title: '功能说明' },
+          { id: 'section-profit-month', title: '收益汇总' },
+          { id: 'section-profit-selector', title: '日期选择' },
+          { id: 'section-profit-curves', title: '曲线对比' },
+          { id: 'section-profit-metrics', title: '指标对比' },
+        ];
       default:
         return [];
     }
@@ -727,6 +742,13 @@ const App: React.FC = () => {
               >
                 Storage Cycles
               </button>
+              <button 
+                onClick={() => setCurrentPage('profit')} 
+                className={`${navButtonBaseClasses} ${currentPage === 'profit' ? navButtonActiveClasses : navButtonInactiveClasses}`}
+                aria-current={currentPage === 'profit' ? 'page' : undefined}
+              >
+                Storage Profit
+              </button>
             </div>
           </nav>
         </div>
@@ -898,7 +920,7 @@ const App: React.FC = () => {
         />
       )}
 
-      {currentPage === 'quality' && (
+{currentPage === 'quality' && (
         <QualityReportPage 
           scheduleData={appState}
           externalQualityReport={loadQuality}
@@ -906,11 +928,28 @@ const App: React.FC = () => {
         />
       )}
 
+      {currentPage === 'profit' && (
+        <StorageProfitPage
+          scheduleData={appState}
+          externalCleanedData={loadCleanedData}
+          storageCyclesResult={lastStorageRun?.response ?? null}
+          storageCyclesPayload={lastStorageRun?.payload ?? null}
+          selectedDateFromCycles={profitSelectedDate}
+          onSelectedDateConsumed={() => setProfitSelectedDate(null)}
+        />
+      )}
       {/* Storage Cycles 页面保持挂载，避免切换时状态重置 */}
       <div className={currentPage === 'storage' ? 'p-4' : 'p-4 hidden'}>
         <StorageCyclesPage 
           scheduleData={appState}
           externalCleanedData={loadCleanedData}
+          onNavigateProfit={(date) => {
+            setProfitSelectedDate(date);
+            setCurrentPage('profit');
+          }}
+          onLatestRunChange={(payload, response) => {
+            setLastStorageRun({ payload, response });
+          }}
         />
       </div>
 

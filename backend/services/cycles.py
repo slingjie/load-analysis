@@ -23,6 +23,9 @@ TZ_NAME = os.environ.get("APP_LOCAL_TZ", "Asia/Shanghai")
 
 logger = logging.getLogger("load-analysis")
 
+# 全局 DOD 兜底值，避免遗留引用导致 NameError；实际计算使用各函数内部的 effective_dod
+dod: float = 1.0
+
 
 class CyclesError(ValueError):
     """储能测算前置校验错误。"""
@@ -658,7 +661,8 @@ def compute_window_avg_days(
     cap = float(storage_cfg.get("capacity_kwh", 0) or 0)
     c_rate = float(storage_cfg.get("c_rate", 0) or 0)
     eta = float(storage_cfg.get("single_side_efficiency", 0.9) or 0.9)
-    dod = float(storage_cfg.get("depth_of_discharge", 1.0) or 1.0)
+    # 保持原变量名存在以兼容旧引用，但实际使用 effective_dod
+    dod = effective_dod
     reserve_ch = float(storage_cfg.get("reserve_charge_kw", 0) or 0)
     reserve_dis = float(storage_cfg.get("reserve_discharge_kw", 0) or 0)
 
@@ -924,13 +928,21 @@ def export_excel_report(
     window_debug: List[dict] | None = None,
     ops_by_hour: List[dict] | None = None,
     runs_debug: List[dict] | None = None,
+    profit_summary: Dict | None = None,
+    step15_df: Optional[pd.DataFrame] = None,
+    energy_formula: str = "physics",
 ) -> tuple[Path, Path | None]:
     """导出 Excel 报表（单文件多 Sheet）。
 
-    - Sheet1: results（日、月、年）
-    - Sheet2: tou_snapshot（12 月价格）
-    - Sheet3: qc（缺价/缺失与合并说明、上限统计）
-    返回：生成的文件路径
+    基础 Sheet：
+    - days/months/year：次数汇总
+    - tou_snapshot：12 月价格
+    - qc：缺价/缺失与上限信息
+
+    调试 Sheet（如有数据）：
+    - profit_days / profit_months / profit_year：收益结构化明细
+    - power_step15：逐 15 分钟功率与负荷明细（含限值）
+    - window_debug / ops_by_hour / runs_debug：窗口明细与运行逻辑
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     base = os.path.splitext(os.path.basename(source_filename))[0] or "result"
@@ -952,6 +964,20 @@ def export_excel_report(
         "limit_mode": [limit_info.get("limit_mode")],
         "transformer_limit_kw": [limit_info.get("transformer_limit_kw")],
     })
+
+    def _build_profit_row(key_name: str, key_value: Any, entry: Dict[str, dict]) -> dict:
+        """将单个 main/physics/sample 收益条目拍平成一行，便于导出调试。"""
+        row: Dict[str, Any] = {key_name: key_value}
+        for formula in ("main", "physics", "sample"):
+            m = entry.get(formula) or {}
+            prefix = f"{formula}_"
+            row[prefix + "revenue"] = float(m.get("revenue", 0.0) or 0.0)
+            row[prefix + "cost"] = float(m.get("cost", 0.0) or 0.0)
+            row[prefix + "profit"] = float(m.get("profit", 0.0) or 0.0)
+            row[prefix + "discharge_energy_kwh"] = float(m.get("discharge_energy_kwh", 0.0) or 0.0)
+            row[prefix + "charge_energy_kwh"] = float(m.get("charge_energy_kwh", 0.0) or 0.0)
+            row[prefix + "profit_per_kwh"] = float(m.get("profit_per_kwh", 0.0) or 0.0)
+        return row
 
     with pd.ExcelWriter(xlsx, engine="openpyxl") as writer:
         # results
@@ -994,6 +1020,63 @@ def export_excel_report(
             summary_df.to_excel(writer, index=False, sheet_name="summary")
         except Exception:
             pass
+
+        # 收益明细（按日 / 按月 / 全年）
+        if profit_summary:
+            days_map = (profit_summary or {}).get("days") or {}
+            months_map = (profit_summary or {}).get("months") or {}
+            year_entry = (profit_summary or {}).get("year") or None
+
+            if days_map:
+                rows_days: List[dict] = []
+                for dkey in sorted(days_map.keys()):
+                    entry = days_map.get(dkey) or {}
+                    rows_days.append(_build_profit_row("date", dkey, entry))
+                pd.DataFrame(rows_days).to_excel(writer, index=False, sheet_name="profit_days")
+
+            if months_map:
+                rows_months: List[dict] = []
+                for ym in sorted(months_map.keys()):
+                    entry = months_map.get(ym) or {}
+                    rows_months.append(_build_profit_row("year_month", ym, entry))
+                pd.DataFrame(rows_months).to_excel(writer, index=False, sheet_name="profit_months")
+
+            if isinstance(year_entry, dict) and year_entry:
+                year_val = year.get("year", 0) if isinstance(year, dict) else 0
+                row_year = _build_profit_row("year", year_val, year_entry)
+                pd.DataFrame([row_year]).to_excel(writer, index=False, sheet_name="profit_year")
+
+        # 逐 15 分钟功率 / 负荷明细（可选）
+        if step15_df is not None and not step15_df.empty:
+            df_power = step15_df.copy()
+            df_power = df_power.reset_index().rename(columns={"index": "timestamp"})
+            # 统一时间戳格式，便于在 Excel 中过滤
+            try:
+                df_power["timestamp"] = pd.to_datetime(df_power["timestamp"], errors="coerce").dt.strftime(
+                    "%Y-%m-%dT%H:%M:%S"
+                )
+            except Exception:  # pragma: no cover - 调试容错
+                pass
+
+            # 加上“引入储能后负荷”列（physics / sample 两套）
+            for suffix, col in (
+                ("physics", "p_grid_effect_physics_kw"),
+                ("sample", "p_grid_effect_sample_kw"),
+            ):
+                if col in df_power.columns:
+                    df_power[f"load_with_storage_{suffix}_kw"] = df_power["load_kw"] + df_power[col]
+
+            # 标记主口径，便于对照 StorageProfit 页
+            main_col = (
+                "p_grid_effect_physics_kw"
+                if (energy_formula or "physics").strip() == "physics"
+                else "p_grid_effect_sample_kw"
+            )
+            if main_col in df_power.columns:
+                df_power["p_grid_effect_main_kw"] = df_power[main_col]
+                df_power["load_with_storage_main_kw"] = df_power["load_kw"] + df_power["p_grid_effect_main_kw"]
+
+            df_power.to_excel(writer, index=False, sheet_name="power_step15")
 
         # 窗口汇总明细（可选）
         if window_debug:
@@ -1053,3 +1136,513 @@ def export_excel_report(
         summary_csv = None
 
     return xlsx, summary_csv
+
+
+def build_step15_power_series(
+    series_15m: pd.DataFrame,
+    daily_ops: Dict[str, List[str]],
+    limit_info: Dict,
+    storage_cfg: Dict,
+    price_series: Optional[pd.DataFrame] | None,
+    *,
+    window_debug: Optional[List[dict]] = None,
+    energy_formula: str = "physics",
+) -> pd.DataFrame:
+    """构建 15 分钟粒度的功率 / 电量序列，供收益计算和曲线对比复用.
+
+    返回的 DataFrame 以 DatetimeIndex 为索引，至少包含：
+    - load_kw: 原始负荷
+    - price: 电价（可能为 NaN）
+    - tier: TOU 分段 ID
+    - date_str: 'YYYY-MM-DD'
+    - year_month: 'YYYY-MM'
+    - op: 每小时运行逻辑（充/放/待机）
+    - p_batt_kw: 电池侧功率（对电池为正充电，负为放电）
+    - e_in_physics_kwh / e_out_physics_kwh
+    - e_in_sample_kwh / e_out_sample_kwh
+    - p_grid_effect_physics_kw / p_grid_effect_sample_kw
+    """
+    if series_15m is None or series_15m.empty:
+        return pd.DataFrame()
+
+    # 统一时间索引与列名
+    s = series_15m.copy()
+    if not isinstance(s.index, pd.DatetimeIndex):
+        s.index = pd.to_datetime(s.index, errors="coerce")
+    s = s.dropna(subset=["load_kw"]).sort_index()
+    if "load_kw" not in s.columns:
+        logger.warning("[profit_step15] series_15m 缺少 load_kw 列，无法计算收益")
+        return pd.DataFrame()
+
+    # 价格序列对齐，如果不存在则补空列
+    if price_series is not None and not price_series.empty:
+        p = price_series.copy()
+        if not isinstance(p.index, pd.DatetimeIndex):
+            p.index = pd.to_datetime(p.index, errors="coerce")
+        p = p.sort_index()
+        joined = s.join(p[["price", "tier"]], how="left")
+    else:
+        joined = s.copy()
+        joined["price"] = None
+        joined["tier"] = None
+
+    joined = joined.sort_index()
+
+    # 限值信息
+    month_max_map: Dict[str, float] = {
+        it.get("year_month"): float(it.get("max_kw", 0) or 0)
+        for it in (limit_info.get("monthly_demand_max") or [])
+    }
+    transformer_limit_kw = limit_info.get("transformer_limit_kw")
+    limit_mode = (limit_info.get("limit_mode") or "monthly_demand_max").strip() or "monthly_demand_max"
+
+    def _day_limit_kw(ts: pd.Timestamp) -> float:
+        ym = ts.strftime("%Y-%m")
+        if limit_mode == "transformer_capacity" and transformer_limit_kw:
+            try:
+                return float(transformer_limit_kw)
+            except Exception:  # pragma: no cover
+                return 0.0
+        return float(month_max_map.get(ym, 0.0))
+
+    # 储能配置
+    cap = float(storage_cfg.get("capacity_kwh", 0) or 0)
+    eta = float(storage_cfg.get("single_side_efficiency", 0.9) or 0.9)
+    dod_cfg = float(storage_cfg.get("depth_of_discharge", 1.0) or 1.0)
+    soc_min = float(storage_cfg.get("soc_min", 0.05) or 0.05)
+    soc_max = float(storage_cfg.get("soc_max", 0.95) or 0.95)
+    effective_dod = max(0.0, min(dod_cfg, soc_max - soc_min))
+    # 兼容遗留引用，防止 NameError
+    dod = effective_dod
+    reserve_ch = float(storage_cfg.get("reserve_charge_kw", 0) or 0)
+    reserve_dis = float(storage_cfg.get("reserve_discharge_kw", 0) or 0)
+    dt_hours = 0.25
+    main_formula = (energy_formula or "physics").strip()
+    main_formula = main_formula if main_formula in ("physics", "sample") else "physics"
+
+    # 运行逻辑编码（与前端 / _extract_hour_ops 保持一致）
+    OP_STANDBY = "待机"
+    OP_CHARGE = "充"
+    OP_DISCHARGE = "放"
+
+    def _op_for_ts(ts: pd.Timestamp) -> Optional[str]:
+        day_key = ts.strftime("%Y-%m-%d")
+        ops = daily_ops.get(day_key) or []
+        h = ts.hour
+        return ops[h] if 0 <= h < len(ops) else None
+
+    # 构造窗口目标（基于 window_debug 的 step15 full_ratio）
+    window_targets: Dict[tuple[str, str], dict] = {}
+    if window_debug:
+        for row in window_debug:
+            try:
+                date_str = str(row.get("date") or "")
+                window = str(row.get("window") or "").lower()
+                kind = str(row.get("kind") or "").lower()
+                hours_raw = str(row.get("hour_list") or "").split(",")
+                hours_set = {int(h) for h in hours_raw if str(h).strip() != ""}
+                full_main = None
+                key_step = f"full_ratio_{main_formula}_step15"
+                key_plain = f"full_ratio_{main_formula}"
+                if key_step in row and row.get(key_step) is not None:
+                    full_main = float(row.get(key_step) or 0.0)
+                elif key_plain in row and row.get(key_plain) is not None:
+                    full_main = float(row.get(key_plain) or 0.0)
+                if full_main is None:
+                    full_main = 1.0
+                if not date_str or window not in ("c1", "c2"):
+                    continue
+                tgt = window_targets.setdefault((date_str, window), {
+                    "charge_hours": set(),
+                    "discharge_hours": set(),
+                    "full_ratio_main": full_main,
+                })
+                # full_ratio 取同窗口内的最大值，保守
+                prev_full = tgt.get("full_ratio_main")
+                if prev_full is None:
+                    tgt["full_ratio_main"] = full_main
+                else:
+                    tgt["full_ratio_main"] = min(prev_full, full_main)
+                if kind == "charge":
+                    tgt["charge_hours"].update(hours_set)
+                elif kind == "discharge":
+                    tgt["discharge_hours"].update(hours_set)
+            except Exception:
+                continue
+
+    def _window_key(ts: pd.Timestamp, op: Optional[str]) -> Optional[tuple[str, str]]:
+        date_str = ts.strftime("%Y-%m-%d")
+        h = ts.hour
+        # 仅在 window_targets 提供信息时使用
+        if not window_targets:
+            return None
+        candidates = []
+        for (d, w), info in window_targets.items():
+            if d != date_str:
+                continue
+            if op == OP_CHARGE and h in info.get("charge_hours", set()):
+                candidates.append((d, w))
+            elif op == OP_DISCHARGE and h in info.get("discharge_hours", set()):
+                candidates.append((d, w))
+        return candidates[0] if candidates else None
+
+    # 窗口累计状态：charged/discharged（电网侧）
+    window_state: Dict[tuple[str, str], dict] = {}
+
+    records: List[dict] = []
+    for ts, row in joined.iterrows():
+        try:
+            load_kw = float(row.get("load_kw", 0.0) or 0.0)
+        except Exception:  # pragma: no cover
+            load_kw = 0.0
+
+        price_val = row.get("price")
+        try:
+            price = float(price_val) if price_val is not None and pd.notna(price_val) else None
+        except Exception:  # pragma: no cover
+            price = None
+
+        tier = row.get("tier")
+        op = _op_for_ts(ts)
+        limit_kw = _day_limit_kw(ts)
+        win_key = _window_key(ts, op)
+
+        # 电池侧功率：对电池为正充电，负为放电
+        p_batt = 0.0
+        if op == OP_CHARGE:
+            p_batt = max(limit_kw - reserve_ch - load_kw, 0.0)
+        elif op == OP_DISCHARGE:
+            p_batt = -max(load_kw - reserve_dis, 0.0)
+        else:
+            p_batt = 0.0
+
+        # 分别在 physics / sample 口径下计算电网侧能量
+        e_in_phys = 0.0
+        e_out_phys = 0.0
+        e_in_sample = 0.0
+        e_out_sample = 0.0
+
+        if p_batt > 0:  # 充电
+            e_batt = p_batt * dt_hours
+            # physics: E_in_grid = base_kwh * DOD / η
+            e_in_phys = e_batt * (effective_dod / max(eta, 1e-9))
+            # sample: E_in_grid = base_kwh / DOD * η
+            e_in_sample = e_batt * (eta / max(effective_dod, 1e-9))
+        elif p_batt < 0:  # 放电
+            e_batt = -p_batt * dt_hours
+            # physics: E_out_grid = base_kwh * DOD * η
+            e_out_phys = e_batt * (effective_dod * eta)
+            # sample: E_out_grid = base_kwh / DOD / η
+            e_out_sample = e_batt * (1.0 / max(effective_dod * eta, 1e-9))
+
+        # 对电网视角的等效功率（正：从电网取电，负：向电网送电）
+        p_grid_phys = (e_in_phys - e_out_phys) / dt_hours if dt_hours > 0 else 0.0
+        p_grid_sample = (e_in_sample - e_out_sample) / dt_hours if dt_hours > 0 else 0.0
+
+        # 在变压器容量口径下，确保“引入储能后的负荷”不会在充电段进一步突破上限
+        # 注意：原始负荷本身若已超过上限，这里不会强行截断，只保证储能本身不会再向上推高。
+        if limit_mode == "transformer_capacity" and limit_kw and load_kw < limit_kw:
+            max_p_grid_charge = max(p_grid_phys, p_grid_sample, 0.0)
+            if max_p_grid_charge > 0:
+                load_with_max = load_kw + max_p_grid_charge
+                if load_with_max > limit_kw + 1e-6:
+                    # 允许的电网侧“额外功率”
+                    allowed_extra = max(limit_kw - load_kw, 0.0)
+                    if allowed_extra <= 0:
+                        scale_cap = 0.0
+                    else:
+                        scale_cap = allowed_extra / max_p_grid_charge
+                    if scale_cap < 0:
+                        scale_cap = 0.0
+                    if scale_cap < 1.0:
+                        # 按比例缩放所有与电池相关的量，保持 physics / sample 两个口径一致
+                        p_batt *= scale_cap
+                        e_in_phys *= scale_cap
+                        e_out_phys *= scale_cap
+                        e_in_sample *= scale_cap
+                        e_out_sample *= scale_cap
+                        p_grid_phys *= scale_cap
+                        p_grid_sample *= scale_cap
+
+        # 禁止“余电上网”：不允许引入储能后的负荷变为负值
+        # 注意：这里是针对电网视角的总负荷（原始负荷 + 储能影响），与计费口径无关。
+        if load_kw > 0:
+            max_discharge = max(-p_grid_phys, -p_grid_sample, 0.0)
+            if max_discharge > 0:
+                allowed_discharge = load_kw  # 最多只能把负荷削到 0
+                if max_discharge > allowed_discharge + 1e-6:
+                    scale_dis = allowed_discharge / max_discharge if allowed_discharge > 0 else 0.0
+                    if scale_dis < 0:
+                        scale_dis = 0.0
+                    if scale_dis < 1.0:
+                        p_batt *= scale_dis
+                        e_in_phys *= scale_dis
+                        e_out_phys *= scale_dis
+                        e_in_sample *= scale_dis
+                        e_out_sample *= scale_dis
+                        p_grid_phys *= scale_dis
+                        p_grid_sample *= scale_dis
+
+        # 窗口充放能量目标（对称约束）
+        cum_charge = None
+        cum_discharge = None
+        charge_target = None
+        discharge_target = None
+        if win_key and cap > 0 and effective_dod > 0:
+            state = window_state.setdefault(win_key, {
+                "charged": 0.0,
+                "discharged": 0.0,
+                "charge_target": None,
+                "discharge_target": None,
+            })
+            if state["charge_target"] is None or state["discharge_target"] is None:
+                info = window_targets.get(win_key, {})
+                full_main = float(info.get("full_ratio_main", 1.0) or 1.0)
+                usable_batt = cap * full_main
+                usable_batt_dod = usable_batt * effective_dod
+                charge_target = usable_batt_dod / max(eta, 1e-9)
+                discharge_target = usable_batt_dod * eta
+                state["charge_target"] = charge_target
+                state["discharge_target"] = discharge_target
+            charge_target = state["charge_target"]
+            discharge_target = state["discharge_target"]
+            # 按主口径能量判断超额
+            e_in_main = e_in_phys if main_formula == "physics" else e_in_sample
+            e_out_main = e_out_phys if main_formula == "physics" else e_out_sample
+            if op == OP_CHARGE and charge_target:
+                allowed = max(charge_target - state["charged"], 0.0)
+                if e_in_main > allowed + 1e-9:
+                    scale_win = allowed / max(e_in_main, 1e-9)
+                    # 缩放所有能量/功率
+                    p_batt *= scale_win
+                    e_in_phys *= scale_win
+                    e_out_phys *= scale_win
+                    e_in_sample *= scale_win
+                    e_out_sample *= scale_win
+                    p_grid_phys *= scale_win
+                    p_grid_sample *= scale_win
+                    e_in_main = e_in_phys if main_formula == "physics" else e_in_sample
+            elif op == OP_DISCHARGE and discharge_target:
+                allowed = max(discharge_target - state["discharged"], 0.0)
+                if e_out_main > allowed + 1e-9:
+                    scale_win = allowed / max(e_out_main, 1e-9)
+                    p_batt *= scale_win
+                    e_in_phys *= scale_win
+                    e_out_phys *= scale_win
+                    e_in_sample *= scale_win
+                    e_out_sample *= scale_win
+                    p_grid_phys *= scale_win
+                    p_grid_sample *= scale_win
+                    e_out_main = e_out_phys if main_formula == "physics" else e_out_sample
+            # 更新累计
+            state["charged"] += e_in_main
+            state["discharged"] += e_out_main
+            cum_charge = state["charged"]
+            cum_discharge = state["discharged"]
+        else:
+            cum_charge = None
+            cum_discharge = None
+            charge_target = None
+            discharge_target = None
+
+        records.append(
+            {
+                "timestamp": ts,
+                "load_kw": load_kw,
+                "price": price,
+                "tier": tier,
+                "date_str": ts.strftime("%Y-%m-%d"),
+                "year_month": ts.strftime("%Y-%m"),
+                "op": op or OP_STANDBY,
+                "limit_kw": float(limit_kw) if limit_kw is not None else None,
+                "p_batt_kw": p_batt,
+                "e_in_physics_kwh": e_in_phys,
+                "e_out_physics_kwh": e_out_phys,
+                "e_in_sample_kwh": e_in_sample,
+                "e_out_sample_kwh": e_out_sample,
+                "p_grid_effect_physics_kw": p_grid_phys,
+                "p_grid_effect_sample_kw": p_grid_sample,
+                "cum_charge_grid_main": cum_charge,
+                "cum_discharge_grid_main": cum_discharge,
+                "charge_target_grid_main": charge_target,
+                "discharge_target_grid_main": discharge_target,
+            }
+        )
+
+    if not records:
+        return pd.DataFrame()
+
+    df = pd.DataFrame.from_records(records).set_index("timestamp").sort_index()
+    return df
+
+
+def compute_profit_summary_step15(
+    series_15m: pd.DataFrame,
+    daily_ops: Dict[str, List[str]],
+    limit_info: Dict,
+    storage_cfg: Dict,
+    price_series: Optional[pd.DataFrame] | None,
+    energy_formula: str = "physics",
+    window_debug: Optional[List[dict]] = None,
+) -> dict:
+    """基于 step_15min 逐点积分的收益计算.
+
+    返回结构：
+    {
+      "days":   { "YYYY-MM-DD": { "main": {...}, "physics": {...}, "sample": {...} } },
+      "months": { "YYYY-MM":    { "main": {...}, "physics": {...}, "sample": {...} } },
+      "year":   { "main": {...}, "physics": {...}, "sample": {...} } | None,
+    }
+    其中 {...} 对应 StorageProfit 的字段字典。
+    """
+    if series_15m is None or series_15m.empty:
+        return {"days": {}, "months": {}, "year": None}
+
+    df = build_step15_power_series(
+        series_15m,
+        daily_ops,
+        limit_info,
+        storage_cfg,
+        price_series,
+        window_debug=window_debug,
+        energy_formula=energy_formula,
+    )
+    if df.empty:
+        return {"days": {}, "months": {}, "year": None}
+
+    main_formula = (energy_formula or "physics").strip() or "physics"
+    if main_formula not in ("physics", "sample"):
+        main_formula = "physics"
+
+    formulas = ("physics", "sample")
+
+    # 调试：记录缺价点数量，便于定位收益为 0 的原因
+    try:
+        missing_price_points = int(df["price"].isna().sum())
+        if missing_price_points > 0:
+            logger.debug(
+                "profit step15: missing price points=%s/%s",
+                missing_price_points,
+                len(df),
+            )
+    except Exception:  # pragma: no cover - 调试容错
+        missing_price_points = 0
+
+    # 按日聚合
+    day_metrics: Dict[str, Dict[str, dict]] = {f: {} for f in formulas}
+
+    for formula in formulas:
+        e_in_col = f"e_in_{formula}_kwh"
+        e_out_col = f"e_out_{formula}_kwh"
+
+        for date_str, sub in df.groupby("date_str"):
+            e_in = float(sub[e_in_col].sum())
+            e_out = float(sub[e_out_col].sum())
+
+            price_series_day = sub["price"].fillna(0.0)
+            cost = float((sub[e_in_col] * price_series_day).sum())
+            revenue = float((sub[e_out_col] * price_series_day).sum())
+            profit = revenue - cost
+
+            metrics = {
+                "revenue": revenue,
+                "cost": cost,
+                "profit": profit,
+                "discharge_energy_kwh": e_out,
+                "charge_energy_kwh": e_in,
+            }
+            if e_out > 0:
+                metrics["profit_per_kwh"] = profit / e_out
+            else:
+                metrics["profit_per_kwh"] = 0.0
+
+            day_metrics[formula][date_str] = metrics
+
+    # 按月与年度聚合（基于日结果累加，避免重复计算）
+    month_metrics: Dict[str, Dict[str, dict]] = {f: {} for f in formulas}
+    year_metrics: Dict[str, dict] = {
+        f: {"revenue": 0.0, "cost": 0.0, "profit": 0.0, "discharge_energy_kwh": 0.0, "charge_energy_kwh": 0.0}
+        for f in formulas
+    }
+
+    for formula in formulas:
+        for date_str, m in day_metrics[formula].items():
+            ym = date_str[:7]
+            bucket = month_metrics[formula].setdefault(
+                ym,
+                {"revenue": 0.0, "cost": 0.0, "profit": 0.0, "discharge_energy_kwh": 0.0, "charge_energy_kwh": 0.0},
+            )
+            for k in ("revenue", "cost", "profit", "discharge_energy_kwh", "charge_energy_kwh"):
+                bucket[k] += float(m.get(k, 0.0) or 0.0)
+                year_metrics[formula][k] += float(m.get(k, 0.0) or 0.0)
+
+        # 计算月度单位收益
+        for ym, m in month_metrics[formula].items():
+            e_out = m["discharge_energy_kwh"]
+            if e_out > 0:
+                m["profit_per_kwh"] = m["profit"] / e_out
+            else:
+                m["profit_per_kwh"] = 0.0
+
+        # 年度单位收益
+        e_out_year = year_metrics[formula]["discharge_energy_kwh"]
+        if e_out_year > 0:
+            year_metrics[formula]["profit_per_kwh"] = year_metrics[formula]["profit"] / e_out_year
+        else:
+            year_metrics[formula]["profit_per_kwh"] = 0.0
+
+    def _to_profit_dict(src: dict) -> dict:
+        return {
+            "revenue": float(src.get("revenue", 0.0) or 0.0),
+            "cost": float(src.get("cost", 0.0) or 0.0),
+            "profit": float(src.get("profit", 0.0) or 0.0),
+            "discharge_energy_kwh": float(src.get("discharge_energy_kwh", 0.0) or 0.0),
+            "charge_energy_kwh": float(src.get("charge_energy_kwh", 0.0) or 0.0),
+            "profit_per_kwh": float(src.get("profit_per_kwh", 0.0) or 0.0),
+        }
+
+    # 组装返回结构
+    days_result: Dict[str, Dict[str, dict]] = {}
+    for date_str in sorted(set(df["date_str"].unique())):
+        entry: Dict[str, dict] = {}
+        for formula in formulas:
+            m = day_metrics[formula].get(date_str)
+            if m:
+                entry[formula] = _to_profit_dict(m)
+        if entry:
+            if main_formula in entry:
+                entry["main"] = entry[main_formula]
+            days_result[date_str] = entry
+
+    months_result: Dict[str, Dict[str, dict]] = {}
+    all_months = set()
+    for formula in formulas:
+        all_months.update(month_metrics[formula].keys())
+    for ym in sorted(all_months):
+        entry: Dict[str, dict] = {}
+        for formula in formulas:
+            m = month_metrics[formula].get(ym)
+            if m:
+                entry[formula] = _to_profit_dict(m)
+        if entry:
+            if main_formula in entry:
+                entry["main"] = entry[main_formula]
+            months_result[ym] = entry
+
+    year_entry: Dict[str, dict] = {}
+    for formula in formulas:
+        m = year_metrics[formula]
+        # 如果全年完全为 0，可以认为缺少有效数据，依然返回 0 结构，便于前端展示
+        year_entry[formula] = _to_profit_dict(m)
+    if year_entry:
+        if main_formula in year_entry:
+            year_entry["main"] = year_entry[main_formula]
+        year_result: Optional[dict] = year_entry
+    else:
+        year_result = None
+
+    return {
+        "days": days_result,
+        "months": months_result,
+        "year": year_result,
+    }

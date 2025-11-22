@@ -62,14 +62,21 @@ interface Props {
     prices: MonthlyTouPrices;
   };
   externalCleanedData?: LoadDataPoint[] | null; // 来自“负荷分析”页的已上传点
+  onNavigateProfit?: (date: string) => void;
+  onLatestRunChange?: (payload: StorageParamsPayload, response: BackendStorageCyclesResponse) => void;
 }
 
-export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalCleanedData }) => {
+export const StorageCyclesPage: React.FC<Props> = ({
+  scheduleData,
+  externalCleanedData,
+  onNavigateProfit,
+  onLatestRunChange,
+}) => {
   const fileRef = useRef<HTMLInputElement>(null);
   const [fileName, setFileName] = useState<string>('');
   const [useAnalyzedData, setUseAnalyzedData] = useState<boolean>(!!(externalCleanedData && externalCleanedData.length > 0));
 
-  // �Ƿ��Ѵ����ɷ������ݣ����ڽ���ͳ�ƣ�
+  // 是否已存在外部清洗后的数据，便于展示统计范围
   const hasExternalData = !!(externalCleanedData && externalCleanedData.length > 0);
   const reusedStats = useMemo(() => {
     if (!externalCleanedData || !externalCleanedData.length) return null;
@@ -118,12 +125,14 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
     return `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
   };
 
-  // 简化的默认参数（可在页面上编辑的表单项可后续补充）
+  // 简化的默认参数（可在页面上编辑的表单项）
   const [params, setParams] = useState({
     capacity_kwh: 5000,
     c_rate: 0.5,
     single_side_efficiency: 0.92,
     depth_of_discharge: 0.9,
+    soc_min: 0.05,
+    soc_max: 0.95,
     reserve_charge_kw: 0,
     reserve_discharge_kw: 0,
     metering_mode: 'monthly_demand_max' as const,
@@ -140,6 +149,9 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
     if (!(p.c_rate > 0)) return '倍率(c_rate) 必须大于 0';
     if (!(p.single_side_efficiency > 0 && p.single_side_efficiency <= 1)) return '单边效率(η) 需在 (0, 1]';
     if (!(p.depth_of_discharge > 0 && p.depth_of_discharge <= 1)) return 'DOD 需在 (0, 1]';
+    if (!(p.soc_min >= 0 && p.soc_min < 1)) return 'SOC 下限需在 [0, 1) 之间';
+    if (!(p.soc_max > 0 && p.soc_max <= 1)) return 'SOC 上限需在 (0, 1] 之间';
+    if (!(p.soc_min < p.soc_max)) return 'SOC 下限需小于 SOC 上限';
     if (!(p.merge_threshold_minutes >= 0)) return '合并阈值需为非负整数';
     if (p.metering_mode === 'transformer_capacity') {
       if (!(p.transformer_capacity_kva > 0)) return '变压器容量(kVA) 必须大于 0';
@@ -262,6 +274,8 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
         c_rate: params.c_rate,
         single_side_efficiency: params.single_side_efficiency,
         depth_of_discharge: params.depth_of_discharge,
+        soc_min: params.soc_min,
+        soc_max: params.soc_max,
         reserve_charge_kw: params.reserve_charge_kw,
         reserve_discharge_kw: params.reserve_discharge_kw,
         metering_mode: params.metering_mode,
@@ -301,6 +315,7 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
       setLoading(true);
       const resp = await computeStorageCycles(file, payload);
       setResult(resp);
+      onLatestRunChange?.(payload, resp);
     } catch (e: any) {
       setError(e?.message || '计算失败');
     } finally {
@@ -490,6 +505,8 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
       c_rate: params.c_rate,
       single_side_efficiency: params.single_side_efficiency,
       depth_of_discharge: params.depth_of_discharge,
+      soc_min: params.soc_min,
+      soc_max: params.soc_max,
       reserve_charge_kw: params.reserve_charge_kw,
       reserve_discharge_kw: params.reserve_discharge_kw,
       metering_mode: params.metering_mode,
@@ -627,6 +644,7 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
   const heatmapChartRef = useRef<HTMLDivElement>(null);
   const tipDayChartRef = useRef<HTMLDivElement>(null);
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
+  const [selectedDayForProfit, setSelectedDayForProfit] = useState<string | null>(null);
   const [monthlyViewMode, setMonthlyViewMode] = useState<'aggregate' | 'byYear'>('aggregate');
 
   const monthsData = useMemo(() => result?.months || [], [result]);
@@ -929,6 +947,24 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
     if (selectedMonth && monthsData.find(m => m.year_month === selectedMonth)) return;
     setSelectedMonth(monthsData[0]?.year_month || null);
   }, [monthsData, selectedMonth]);
+
+  const daysInSelectedMonth = useMemo(() => {
+    if (!selectedMonth) return [];
+    return daysData
+      .filter(d => d.date && d.date.startsWith(selectedMonth))
+      .map(d => d.date)
+      .sort();
+  }, [daysData, selectedMonth]);
+
+  useEffect(() => {
+    if (!daysInSelectedMonth.length) {
+      setSelectedDayForProfit(null);
+      return;
+    }
+    setSelectedDayForProfit(prev =>
+      prev && daysInSelectedMonth.includes(prev) ? prev : daysInSelectedMonth[0],
+    );
+  }, [daysInSelectedMonth]);
 
   // 动态加载 ECharts（复用其他组件做法）
   const loadECharts = (): Promise<any> => {
@@ -1410,7 +1446,7 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
           {/* 高级设置：倍率 / 效率 / DOD / 合并阈值等 */}
           <details className="rounded-lg border border-dashed border-slate-300 bg-slate-50/70 px-3 py-2">
             <summary className="cursor-pointer text-xs md:text-sm text-slate-700 select-none">
-              高级设置（倍率、效率、DOD、合并阈值等）
+              高级设置（倍率、效率、DOD、SOC、合并阈值等）
             </summary>
             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-3">
               <label className="flex flex-col gap-1">
@@ -1453,6 +1489,36 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
                     max="1"
                     value={params.depth_of_discharge}
                     onChange={e => setParams(p => ({ ...p, depth_of_discharge: Number(e.target.value) }))}
+                  />
+                  <span className="text-xs text-slate-500 pr-1">比例</span>
+                </div>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span>SOC 下限</span>
+                <div className="flex items-center gap-1">
+                  <input
+                    className="border rounded px-2 py-1 flex-1"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="1"
+                    value={params.soc_min}
+                    onChange={e => setParams(p => ({ ...p, soc_min: Number(e.target.value) }))}
+                  />
+                  <span className="text-xs text-slate-500 pr-1">比例</span>
+                </div>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span>SOC 上限</span>
+                <div className="flex items-center gap-1">
+                  <input
+                    className="border rounded px-2 py-1 flex-1"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="1"
+                    value={params.soc_max}
+                    onChange={e => setParams(p => ({ ...p, soc_max: Number(e.target.value) }))}
                   />
                   <span className="text-xs text-slate-500 pr-1">比例</span>
                 </div>
@@ -1802,17 +1868,45 @@ export const StorageCyclesPage: React.FC<Props> = ({ scheduleData, externalClean
             <div className="p-3 border rounded bg-white flex flex-col">
               <div className="flex items-center justify-between mb-2">
                 <div className="text-sm font-semibold mb-1">单月日度次数曲线</div>
-                <div className="text-xs flex items-center gap-1">
-                  <span>月份</span>
-                  <select
-                    className="border rounded px-2 py-0.5"
-                    value={selectedMonth || ''}
-                    onChange={e => setSelectedMonth(e.target.value)}
-                  >
-                    {monthsData.map(m => (
-                      <option key={m.year_month} value={m.year_month}>{m.year_month}</option>
-                    ))}
-                  </select>
+                <div className="text-xs flex items-center gap-2 flex-wrap">
+                  <div className="flex items-center gap-1">
+                    <span>月份</span>
+                    <select
+                      className="border rounded px-2 py-0.5"
+                      value={selectedMonth || ''}
+                      onChange={e => setSelectedMonth(e.target.value)}
+                    >
+                      {monthsData.map(m => (
+                        <option key={m.year_month} value={m.year_month}>{m.year_month}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {onNavigateProfit && (
+                    <>
+                      <div className="flex items-center gap-1">
+                        <span>日期</span>
+                        <select
+                          className="border rounded px-2 py-0.5"
+                          value={selectedDayForProfit || ''}
+                          onChange={e => setSelectedDayForProfit(e.target.value || null)}
+                        >
+                          {daysInSelectedMonth.map(d => (
+                            <option key={d} value={d}>{d}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <button
+                        type="button"
+                        className="px-2 py-1 rounded bg-blue-600 text-white"
+                        disabled={!selectedDayForProfit}
+                        onClick={() => {
+                          if (selectedDayForProfit) onNavigateProfit(selectedDayForProfit);
+                        }}
+                      >
+                        跳转收益对比
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
               <div ref={dayChartRef} style={{ width: '100%', height: 280 }} />
