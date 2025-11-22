@@ -10,6 +10,7 @@ import type {
 import type { LoadDataPoint } from '../utils';
 import { fetchStorageCurves, computeStorageCycles, type StorageParamsPayload } from '../storageApi';
 import { EChartTimeSeries } from './EChartTimeSeries';
+import { TIER_DEFINITIONS } from '../constants';
 
 // 复用 ECharts 按需加载逻辑（与 EChartTimeSeries 保持一致）
 const loadECharts = (): Promise<any> => {
@@ -225,6 +226,109 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
     return (m?.profit?.main) ?? null;
   }, [cyclesResult, selectedDate]);
 
+  // 分时电价维度的电量与电费拆解
+  const touRows = useMemo(() => {
+    if (!curvesData) return [];
+    const summary = curvesData.summary;
+    return TIER_DEFINITIONS.map((tier) => {
+      const id = tier.id;
+      const eOrig = summary.energy_by_tier_original[id] ?? 0;
+      const eNew = summary.energy_by_tier_new[id] ?? 0;
+      const bOrig = summary.bill_by_tier_original[id] ?? 0;
+      const bNew = summary.bill_by_tier_new[id] ?? 0;
+      const delta = bOrig - bNew;
+      const hasData =
+        Math.abs(eOrig) > 1e-6 ||
+        Math.abs(eNew) > 1e-6 ||
+        Math.abs(bOrig) > 1e-6 ||
+        Math.abs(bNew) > 1e-6;
+      if (!hasData) return null;
+      return {
+        id,
+        name: tier.name,
+        energyOriginal: eOrig,
+        energyNew: eNew,
+        billOriginal: bOrig,
+        billNew: bNew,
+        billSaved: delta,
+      };
+    }).filter((row): row is {
+      id: string;
+      name: string;
+      energyOriginal: number;
+      energyNew: number;
+      billOriginal: number;
+      billNew: number;
+      billSaved: number;
+    } => row !== null);
+  }, [curvesData]);
+
+  // 按月与全年汇总充放电量与收益（主口径）
+  const monthlySummaryRows = useMemo(() => {
+    if (!cyclesResult) return [];
+
+    const rows: {
+      key: string;
+      label: string;
+      discharge: number;
+      charge: number;
+      profit: number;
+      profitPerKwh: number | null;
+    }[] = [];
+
+    const months = cyclesResult.months ?? [];
+    const sorted = [...months].sort((a, b) => {
+      const ymA = a.year_month || '';
+      const ymB = b.year_month || '';
+      const mA = Number.parseInt(
+        ymA.length >= 7 ? ymA.slice(5, 7) : '0',
+        10,
+      );
+      const mB = Number.parseInt(
+        ymB.length >= 7 ? ymB.slice(5, 7) : '0',
+        10,
+      );
+      return mA - mB;
+    });
+
+    sorted.forEach((m, index) => {
+      const main = m.profit?.main;
+      if (!main) return;
+      const ym = m.year_month || '';
+      // 优先从 year_month 中截取月份，否则退回到索引 + 1
+      const monthPart = ym.length >= 7 ? ym.slice(5, 7) : '';
+      const monthNumber = Number.parseInt(monthPart || String(index + 1), 10);
+      const label = Number.isFinite(monthNumber)
+        ? `${monthNumber}月`
+        : ym || `${index + 1}月`;
+      rows.push({
+        key: ym || String(index + 1),
+        label,
+        discharge: main.discharge_energy_kwh ?? 0,
+        charge: main.charge_energy_kwh ?? 0,
+        profit: main.profit ?? 0,
+        profitPerKwh:
+          main.profit_per_kwh != null ? main.profit_per_kwh : null,
+      });
+    });
+
+    const yearMain = cyclesResult.year?.profit?.main;
+    if (yearMain) {
+      const yearLabel = '全年';
+      rows.push({
+        key: 'year',
+        label: yearLabel,
+        discharge: yearMain.discharge_energy_kwh ?? 0,
+        charge: yearMain.charge_energy_kwh ?? 0,
+        profit: yearMain.profit ?? 0,
+        profitPerKwh:
+          yearMain.profit_per_kwh != null ? yearMain.profit_per_kwh : null,
+      });
+    }
+
+    return rows;
+  }, [cyclesResult]);
+
   // 在同一张图中展示两条曲线，并支持开关控制显示/隐藏
   const combinedChartRef = useRef<HTMLDivElement | null>(null);
   const [showOriginal, setShowOriginal] = useState(true);
@@ -328,7 +432,7 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
     };
   }, [curvesData, chartOriginalData, chartWithStorageData, showOriginal, showWithStorage]);
 
-  return (
+    return (
     <div className="space-y-6">
       <div id="section-profit-intro" className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 space-y-3">
         <h2 className="text-lg font-semibold text-slate-800">储能收益与负荷对比</h2>
@@ -338,21 +442,82 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
         </p>
       </div>
 
-      {monthProfitMain && selectedDate && (
-        <div id="section-profit-month" className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 text-sm">
-          <div className="p-3 rounded-lg bg-sky-50 border border-sky-100">
-            <div className="text-xs text-sky-700">
-              当前月份：{selectedDate.slice(0, 7)}
+      {(selectedDayProfitMain || monthProfitMain || yearProfitMain) && (
+        <div
+          id="section-profit-summary"
+          className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3 text-sm"
+        >
+          {selectedDayProfitMain && selectedDate && (
+            <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-100">
+              <div className="text-xs text-emerald-700">当日净利润（{selectedDate}）</div>
+              <div className="mt-1 text-lg font-semibold text-emerald-800">
+                {selectedDayProfitMain.profit.toFixed(2)} 元
+              </div>
+              <div className="mt-1 text-xs text-emerald-700">
+                单位收益：{selectedDayProfitMain.profit_per_kwh.toFixed(3)} 元/kWh
+              </div>
             </div>
-            <div className="mt-1 text-lg font-semibold text-sky-800">
-              {monthProfitMain.profit.toFixed(2)} 元
+          )}
+          {monthProfitMain && selectedDate && (
+            <div className="p-3 rounded-lg bg-sky-50 border border-sky-100">
+              <div className="text-xs text-sky-700">
+                当前月份：{selectedDate.slice(0, 7)}
+              </div>
+              <div className="mt-1 text-lg font-semibold text-sky-800">
+                {monthProfitMain.profit.toFixed(2)} 元
+              </div>
+              <div className="mt-1 text-xs text-sky-700">
+                单位收益：{monthProfitMain.profit_per_kwh.toFixed(3)} 元/kWh
+              </div>
             </div>
-          </div>
-          <div className="p-3 rounded-lg bg-sky-50 border border-sky-100">
-            <div className="text-xs text-sky-700">当前月份单位收益</div>
-            <div className="mt-1 text-lg font-semibold text-sky-800">
-              {monthProfitMain.profit_per_kwh.toFixed(3)} 元/kWh
+          )}
+          {yearProfitMain && (
+            <div className="p-3 rounded-lg bg-slate-50 border border-slate-100">
+              <div className="text-xs text-slate-700">
+                全年净利润（{cyclesResult?.year?.year || ''} 年）
+              </div>
+              <div className="mt-1 text-lg font-semibold text-slate-800">
+                {yearProfitMain.profit.toFixed(2)} 元
+              </div>
+              <div className="mt-1 text-xs text-slate-700">
+                单位收益：{yearProfitMain.profit_per_kwh.toFixed(3)} 元/kWh
+              </div>
             </div>
+          )}
+        </div>
+      )}
+
+      {cyclesResult && monthlySummaryRows.length > 0 && (
+        <div
+          id="section-profit-monthly-summary"
+          className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 space-y-2 text-sm"
+        >
+          <h3 className="text-sm font-semibold text-slate-800">月度与年度充放电量与收益汇总</h3>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-xs text-left text-slate-700">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50">
+                  <th className="px-2 py-1">月份</th>
+                  <th className="px-2 py-1 text-right">放电电量 (kWh)</th>
+                  <th className="px-2 py-1 text-right">充电电量 (kWh)</th>
+                  <th className="px-2 py-1 text-right">净收益 (元)</th>
+                  <th className="px-2 py-1 text-right">单位收益 (元/kWh)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {monthlySummaryRows.map((row) => (
+                  <tr key={row.key} className="border-b border-slate-100 last:border-0">
+                    <td className="px-2 py-1">{row.label}</td>
+                    <td className="px-2 py-1 text-right">{row.discharge.toFixed(1)}</td>
+                    <td className="px-2 py-1 text-right">{row.charge.toFixed(1)}</td>
+                    <td className="px-2 py-1 text-right">{row.profit.toFixed(2)}</td>
+                    <td className="px-2 py-1 text-right">
+                      {row.profitPerKwh != null ? row.profitPerKwh.toFixed(3) : '--'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -376,16 +541,6 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
           </div>
 
           <div className="flex items-center gap-3">
-            {selectedDayProfitMain && (
-              <div className="text-xs text-slate-600">
-                <span className="mr-3">
-                  当日收益：<span className="font-semibold text-emerald-600">{selectedDayProfitMain.profit.toFixed(2)} 元</span>
-                </span>
-                <span>
-                  单位收益：<span className="font-semibold text-slate-700">{selectedDayProfitMain.profit_per_kwh.toFixed(3)} 元/kWh</span>
-                </span>
-              </div>
-            )}
             <button
               type="button"
               className="px-3 py-1.5 rounded-md bg-blue-600 text-white text-sm disabled:opacity-50"
@@ -398,29 +553,6 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
         </div>
 
         {error && <div className="text-xs text-red-600">{error}</div>}
-
-        {yearProfitMain && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-2 text-sm">
-            <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-100">
-              <div className="text-xs text-emerald-700">全年净收益（主口径）</div>
-              <div className="mt-1 text-lg font-semibold text-emerald-700">
-                {yearProfitMain.profit.toFixed(2)} 元
-              </div>
-            </div>
-            <div className="p-3 rounded-lg bg-slate-50 border border-slate-100">
-              <div className="text-xs text-slate-700">全年放电电量</div>
-              <div className="mt-1 text-lg font-semibold text-slate-800">
-                {yearProfitMain.discharge_energy_kwh.toFixed(1)} kWh
-              </div>
-            </div>
-            <div className="p-3 rounded-lg bg-slate-50 border border-slate-100">
-              <div className="text-xs text-slate-700">全年单位收益</div>
-              <div className="mt-1 text-lg font-semibold text-slate-800">
-                {yearProfitMain.profit_per_kwh.toFixed(3)} 元/kWh
-              </div>
-            </div>
-          </div>
-        )}
       </div>
 
       {curvesData && (
@@ -459,21 +591,31 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
             <div>
               <div className="text-xs text-slate-500">最大需量（原始）</div>
               <div className="mt-1 font-semibold text-slate-800">
-                {curvesData.summary.max_demand_original_kw.toFixed(1)} kW
+                {Number.isFinite(curvesData.summary.max_demand_original_kw)
+                  ? curvesData.summary.max_demand_original_kw.toFixed(1)
+                  : '--'} kW
               </div>
             </div>
             <div>
               <div className="text-xs text-slate-500">最大需量（储能后）</div>
               <div className="mt-1 font-semibold text-slate-800">
-                {curvesData.summary.max_demand_new_kw.toFixed(1)} kW
+                {Number.isFinite(curvesData.summary.max_demand_new_kw)
+                  ? curvesData.summary.max_demand_new_kw.toFixed(1)
+                  : '--'} kW
               </div>
             </div>
             <div>
               <div className="text-xs text-slate-500">最大需量降低</div>
               <div className="mt-1 font-semibold text-emerald-700">
-                {curvesData.summary.max_demand_reduction_kw.toFixed(1)} kW
-                {' '}
-                ({(curvesData.summary.max_demand_reduction_ratio * 100).toFixed(1)}%)
+                {Number.isFinite(curvesData.summary.max_demand_reduction_kw)
+                  ? curvesData.summary.max_demand_reduction_kw.toFixed(1)
+                  : '--'} kW{' '}
+                (
+                  {Number.isFinite(curvesData.summary.max_demand_reduction_ratio)
+                    ? (curvesData.summary.max_demand_reduction_ratio * 100).toFixed(1)
+                    : '--'}
+                  %
+                )
               </div>
             </div>
             {curvesData.summary.profit_day_main && (
@@ -487,6 +629,41 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
           </div>
         </div>
       )}
+
+      {curvesData && touRows.length > 0 && (
+        <div id="section-profit-tou" className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 space-y-2 text-sm">
+          <h3 className="text-sm font-semibold text-slate-800">分时电价分档汇总</h3>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-xs text-left text-slate-700">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50">
+                  <th className="px-2 py-1">分时档位</th>
+                  <th className="px-2 py-1 text-right">原始电量 (kWh)</th>
+                  <th className="px-2 py-1 text-right">储能后电量 (kWh)</th>
+                  <th className="px-2 py-1 text-right">原始电费 (元)</th>
+                  <th className="px-2 py-1 text-right">储能后电费 (元)</th>
+                  <th className="px-2 py-1 text-right">节省电费 (元)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {touRows.map(row => (
+                  <tr key={row.id} className="border-b border-slate-100 last:border-0">
+                    <td className="px-2 py-1">{row.name}</td>
+                    <td className="px-2 py-1 text-right">{row.energyOriginal.toFixed(1)}</td>
+                    <td className="px-2 py-1 text-right">{row.energyNew.toFixed(1)}</td>
+                    <td className="px-2 py-1 text-right">{row.billOriginal.toFixed(2)}</td>
+                    <td className="px-2 py-1 text-right">{row.billNew.toFixed(2)}</td>
+                    <td className="px-2 py-1 text-right text-emerald-700">
+                      {row.billSaved.toFixed(2)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };
