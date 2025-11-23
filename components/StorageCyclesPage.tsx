@@ -7,7 +7,8 @@ import type {
   BackendTipDischargeSummary,
 } from '../types';
 import type { LoadDataPoint } from '../utils';
-import { computeStorageCycles, type StorageParamsPayload } from '../storageApi';
+import { computeStorageCycles, computeStorageCyclesWithProgress, type StorageParamsPayload } from '../storageApi';
+import UploadProgressRing from './UploadProgressRing';
 
 const CONFIG_STORAGE_PREFIX = 'storageCyclesConfig:';
 const SOLVE_CAPACITY_STEPS = 8; // 反推容量时默认预计算步数（可通过界面修改实际步数）
@@ -94,7 +95,14 @@ export const StorageCyclesPage: React.FC<Props> = ({
     setUseAnalyzedData(!!(externalCleanedData && externalCleanedData.length > 0));
   }, [externalCleanedData]);
   const [loading, setLoading] = useState(false);
-  const [progress, setProgress] = useState<number>(0);
+  const [progress, setProgress] = useState<number>(0); // 保留给兼容但主要使用环形
+  const [cyclePhase, setCyclePhase] = useState<'idle'|'uploading'|'computing'|'done'|'error'>('idle');
+  const [cycleProgressPct, setCycleProgressPct] = useState(0);
+  const [showCycleRing, setShowCycleRing] = useState(false);
+  const [uploadBytesTotal, setUploadBytesTotal] = useState<number | null>(null);
+  const [uploadEtaSeconds, setUploadEtaSeconds] = useState<number | null>(null);
+  const cycleAbortRef = useRef<() => void>(() => {});
+  const uploadSamplesRef = useRef<Array<{time:number;loaded:number}>>([]);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BackendStorageCyclesResponse | null>(null);
   const [savedConfigName, setSavedConfigName] = useState('');
@@ -313,13 +321,69 @@ export const StorageCyclesPage: React.FC<Props> = ({
       const v = validateParams();
       if (v) { setError(v); return; }
       setLoading(true);
-      const resp = await computeStorageCycles(file, payload);
-      setResult(resp);
-      onLatestRunChange?.(payload, resp);
+      setCyclePhase(file ? 'uploading' : 'computing');
+      setCycleProgressPct(0);
+      setShowCycleRing(true);
+      setUploadEtaSeconds(null);
+      uploadSamplesRef.current = [];
+
+      if (file) {
+        const { promise, abort } = computeStorageCyclesWithProgress(file, payload, (loaded, total) => {
+          setUploadBytesTotal(total);
+          const pct = Math.round((loaded / total) * 100);
+          setCycleProgressPct(pct);
+          const now = performance.now();
+          uploadSamplesRef.current.push({ time: now, loaded });
+          if (uploadSamplesRef.current.length > 6) uploadSamplesRef.current.shift();
+          if (loaded < total) {
+            if (uploadSamplesRef.current.length >= 2) {
+              const first = uploadSamplesRef.current[0];
+              const last = uploadSamplesRef.current[uploadSamplesRef.current.length - 1];
+              const bytesDelta = last.loaded - first.loaded;
+              const timeDeltaSec = (last.time - first.time)/1000;
+              if (bytesDelta > 0 && timeDeltaSec > 0) {
+                const speed = bytesDelta / timeDeltaSec;
+                const remaining = total - loaded;
+                setUploadEtaSeconds(remaining / speed);
+              }
+            }
+          } else {
+            setCyclePhase('computing');
+            setUploadEtaSeconds(null);
+          }
+        });
+        cycleAbortRef.current = abort;
+        const resp = await promise;
+        setResult(resp);
+        onLatestRunChange?.(payload, resp);
+        setCyclePhase('done');
+        setCycleProgressPct(100);
+      } else {
+        // 无文件：直接调用原始 fetch 并使用模拟进度
+        setCyclePhase('computing');
+        let fakePct = 0;
+        const fakeTimer = window.setInterval(() => {
+          fakePct = Math.min(95, fakePct + 5);
+          setCycleProgressPct(fakePct);
+        }, 400);
+        try {
+          const resp = await computeStorageCycles(null, payload);
+          window.clearInterval(fakeTimer);
+          setCycleProgressPct(100);
+          setResult(resp);
+          onLatestRunChange?.(payload, resp);
+          setCyclePhase('done');
+        } catch (err: any) {
+          window.clearInterval(fakeTimer);
+          throw err;
+        }
+      }
     } catch (e: any) {
+      setCyclePhase('error');
       setError(e?.message || '计算失败');
     } finally {
       setLoading(false);
+      setTimeout(() => { setShowCycleRing(false); setCyclePhase('idle'); }, 2000);
     }
   };
 
@@ -1214,49 +1278,65 @@ export const StorageCyclesPage: React.FC<Props> = ({
     return () => { try { chart && chart.dispose && chart.dispose(); } catch { /* ignore */ } };
   }, [tipSummary?.dayStats, tipSummary?.ratio]);
 
-  // 计算进度条：在 loading=true 时做一个伪进度，提升感知
-  useEffect(() => {
-    let timer: number | undefined;
-    if (loading) {
-      setProgress(10);
-      timer = window.setInterval(() => {
-        setProgress(prev => {
-          if (prev >= 90) return prev;
-          return prev + 5;
-        });
-      }, 300);
-    } else {
-      setProgress(0);
-    }
-    return () => {
-      if (timer) {
-        window.clearInterval(timer);
-      }
-    };
-  }, [loading]);
+  // 不再使用旧伪进度条逻辑，保留占位以防后续扩展
 
 
   return (
     <div className="space-y-8">
-      <div className="p-6 bg-white rounded-xl shadow-lg space-y-4">
-        <div className="flex items-center gap-2">
+      <div id="section-cycles-upload" className="scroll-mt-24 p-6 bg-white rounded-xl shadow-lg space-y-4">
+        <div className="flex items-center gap-3">
           <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={() => setFileName(fileRef.current?.files?.[0]?.name || '')} />
-          <button className="px-3 py-1.5 rounded bg-blue-600 text-white text-sm" onClick={() => fileRef.current?.click()}>
+          <button className="px-3 py-1.5 rounded bg-blue-600 text-white text-sm whitespace-nowrap w-[110px]" onClick={() => fileRef.current?.click()}>
             选择负荷文件
           </button>
-          <span className="text-sm text-slate-600">{fileName || '未选择文件'}</span>
-          <button className="ml-2 px-3 py-1.5 rounded bg-green-600 text-white text-sm" onClick={handleUpload} disabled={loading}>
-            {loading ? '计算中…' : '开始测算'}
-          </button>
-        </div>
-        {loading && progress > 0 && (
-          <div className="mt-2 h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
-            <div
-              className="h-full rounded-full bg-emerald-500 transition-all duration-300"
-              style={{ width: `${progress}%` }}
-            />
+          <span className="text-sm text-slate-600 whitespace-nowrap max-w-[160px] overflow-hidden text-ellipsis">{fileName || '未选择文件'}</span>
+          <div className="flex items-center gap-2 w-full">
+            <button className="ml-2 px-3 py-1.5 rounded bg-green-600 text-white text-sm disabled:opacity-60" onClick={handleUpload} disabled={loading}>
+              {cyclePhase === 'uploading' ? '上传中…' : cyclePhase === 'computing' ? '计算中…' : '开始测算'}
+            </button>
+            {showCycleRing && (
+              <div className="flex items-center gap-2">
+                <UploadProgressRing
+                  progress={cycleProgressPct}
+                  status={cyclePhase === 'computing' ? 'computing' : cyclePhase === 'uploading' ? 'uploading' : cyclePhase === 'done' ? 'done' : cyclePhase === 'error' ? 'error' : 'idle'}
+                  size={36}
+                  stroke={4}
+                  labelOverride={cyclePhase === 'computing' ? '计算' : undefined}
+                />
+                {cyclePhase === 'uploading' && uploadEtaSeconds != null && (
+                  <span className="text-[11px] text-slate-600 w-16">剩余≈{Math.max(1, Math.round(uploadEtaSeconds))}秒</span>
+                )}
+                {(cyclePhase === 'uploading' || cyclePhase === 'computing') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      try { cycleAbortRef.current(); } catch { /* ignore */ }
+                      setCyclePhase('error');
+                      setError('已取消测算');
+                      setShowCycleRing(false);
+                      setLoading(false);
+                    }}
+                    className="text-[11px] px-2 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-50"
+                  >取消</button>
+                )}
+              </div>
+            )}
+            {/* 跳转收益对比按钮移至主操作区最右侧 */}
+            {onNavigateProfit && (
+              <div className="flex-1 flex justify-end items-center">
+                <button
+                  type="button"
+                  className="px-3 py-1.5 rounded bg-blue-600 text-white text-sm ml-4"
+                  disabled={!selectedDayForProfit}
+                  onClick={() => {
+                    if (selectedDayForProfit) onNavigateProfit(selectedDayForProfit);
+                  }}
+                >跳转收益对比</button>
+              </div>
+            )}
           </div>
-        )}
+        </div>
+        {/* 已替换为环形进度，不再显示旧线性条 */}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
           <label className="flex items-center gap-2">
@@ -1271,7 +1351,7 @@ export const StorageCyclesPage: React.FC<Props> = ({
         </div>
 
         {/* 参数表单（简化）：基础参数 + 高级设置折叠 */}
-        <div className="space-y-3 text-sm">
+        <div id="section-cycles-params" className="scroll-mt-24 space-y-3 text-sm">
           {/* 常规配置标题与说明 */}
           <div className="flex items-baseline justify-between">
             <div className="text-sm font-semibold text-slate-800">常规配置</div>
@@ -1637,7 +1717,7 @@ export const StorageCyclesPage: React.FC<Props> = ({
       {result && (
         <div className="mt-2 space-y-3">
           {kpiMetrics && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+            <div id="section-cycles-kpi" className="scroll-mt-24 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
               <div className="p-2.5 bg-white rounded-xl shadow-lg border border-slate-200 border-l-4 border-blue-500">
                 <div className="flex items-center justify-between mb-1">
                   <div className="text-xs text-slate-500">年累计循环次数</div>
@@ -1695,7 +1775,7 @@ export const StorageCyclesPage: React.FC<Props> = ({
           )}
 
           {/* 循环有效/等效统计表格（按月 + 年度汇总） */}
-          <div className="p-3 border rounded-xl bg-white shadow-sm overflow-x-auto">
+          <div id="section-cycles-stats" className="scroll-mt-24 p-3 border rounded-xl bg-white shadow-sm overflow-x-auto">
             <div className="flex items-center justify-between mb-2">
               <div className="text-sm font-semibold text-slate-800">
                 循环有效/等效统计（按月）
@@ -1844,7 +1924,7 @@ export const StorageCyclesPage: React.FC<Props> = ({
           </div>
 
           {/* 图表区：四块图统一为 2×2 网格，尺寸协调 */}
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <div id="section-cycles-charts" className="scroll-mt-24 grid grid-cols-1 xl:grid-cols-2 gap-4">
             {/* 月度充放次数（曲线） */}
             <div className="p-3 border rounded bg-white flex flex-col">
               <div className="flex items-center justify-between mb-2">
@@ -1882,30 +1962,18 @@ export const StorageCyclesPage: React.FC<Props> = ({
                     </select>
                   </div>
                   {onNavigateProfit && (
-                    <>
-                      <div className="flex items-center gap-1">
-                        <span>日期</span>
-                        <select
-                          className="border rounded px-2 py-0.5"
-                          value={selectedDayForProfit || ''}
-                          onChange={e => setSelectedDayForProfit(e.target.value || null)}
-                        >
-                          {daysInSelectedMonth.map(d => (
-                            <option key={d} value={d}>{d}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <button
-                        type="button"
-                        className="px-2 py-1 rounded bg-blue-600 text-white"
-                        disabled={!selectedDayForProfit}
-                        onClick={() => {
-                          if (selectedDayForProfit) onNavigateProfit(selectedDayForProfit);
-                        }}
+                    <div className="flex items-center gap-1">
+                      <span>日期</span>
+                      <select
+                        className="border rounded px-2 py-0.5"
+                        value={selectedDayForProfit || ''}
+                        onChange={e => setSelectedDayForProfit(e.target.value || null)}
                       >
-                        跳转收益对比
-                      </button>
-                    </>
+                        {daysInSelectedMonth.map(d => (
+                          <option key={d} value={d}>{d}</option>
+                        ))}
+                      </select>
+                    </div>
                   )}
                 </div>
               </div>
@@ -1922,7 +1990,7 @@ export const StorageCyclesPage: React.FC<Props> = ({
             </div>
 
             {/* 尖放电占比 */}
-            <div className="p-3 border rounded bg-white flex flex-col justify-between">
+            <div id="section-cycles-tip" className="scroll-mt-24 p-3 border rounded bg-white flex flex-col justify-between">
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <div className="text-sm font-semibold text-slate-800">尖放电占比</div>

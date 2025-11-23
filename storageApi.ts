@@ -77,6 +77,76 @@ export const computeStorageCycles = async (
   return result as BackendStorageCyclesResponse;
 };
 
+// 带上传进度与取消能力的版本（主要针对开始测算按钮上传大文件时的交互优化）
+export const computeStorageCyclesWithProgress = (
+  file: File | null,
+  payload: StorageParamsPayload,
+  onUploadProgress?: (loaded: number, total: number) => void,
+): { promise: Promise<BackendStorageCyclesResponse>; abort: () => void } => {
+  const formData = new FormData();
+  if (file) formData.append('file', file);
+  formData.append('payload', JSON.stringify(payload));
+  const url = `${BASE_URL}/api/storage/cycles`;
+  console.debug('[storageApi] XHR POST cycles', url, { base: BASE_URL, hasFile: !!file });
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', url, true);
+
+  if (onUploadProgress) {
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        onUploadProgress(e.loaded, e.total);
+      }
+    };
+  }
+
+  const promise = new Promise<BackendStorageCyclesResponse>((resolve, reject) => {
+    xhr.onerror = () => {
+      reject(new Error('网络错误，无法提交测算请求。'));
+    };
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState === 4) {
+        const contentType = xhr.getResponseHeader('content-type') || '';
+        let result: any = null;
+        let rawText: string | null = null;
+        try {
+          rawText = xhr.responseText;
+          if (contentType.includes('application/json')) {
+            result = JSON.parse(rawText);
+          } else {
+            try { result = rawText ? JSON.parse(rawText) : null; } catch { /* ignore */ }
+          }
+        } catch { /* ignore parse */ }
+
+        if (xhr.status < 200 || xhr.status >= 300) {
+          const detail = result?.detail || rawText || `${xhr.status} ${xhr.statusText}` || '服务器处理失败，请稍后重试。';
+          console.error('[storageApi] computeStorageCyclesWithProgress failed', {
+            url,
+            status: xhr.status,
+            statusText: xhr.statusText,
+            detail,
+            payload,
+            rawText,
+          });
+          reject(new Error(detail));
+          return;
+        }
+        resolve(result as BackendStorageCyclesResponse);
+      }
+    };
+    try {
+      xhr.send(formData);
+    } catch (err) {
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  });
+
+  return {
+    promise,
+    abort: () => { try { xhr.abort(); } catch { /* ignore */ } },
+  };
+};
+
 export const fetchStorageCurves = async (
   payload: StorageParamsPayload,
   date: string,

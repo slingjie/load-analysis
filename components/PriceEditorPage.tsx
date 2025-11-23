@@ -182,6 +182,140 @@ export const PriceEditorPage: React.FC<PriceEditorPageProps> = ({ scheduleData, 
     return buildPriceSeries(viewMode, viewIndex, monthlySchedule, dateRules, priceMap);
   }, [viewMode, viewIndex, monthlySchedule, dateRules, prices]);
 
+  // 汇总表数据：生成储能窗口汇总（window_debug 格式）
+  const summaryTableData = useMemo(() => {
+    if (seriesData.length === 0) return [];
+
+    // 获取每小时的 op 和 tou
+    const getOp = (hour: number): OperatingLogicId => {
+      if (viewMode === 'month') {
+        const monthIdx = Math.min(Math.max(viewIndex, 0), 11);
+        return monthlySchedule[monthIdx][hour].op;
+      } else {
+        const rule = dateRules[viewIndex];
+        return rule?.schedule[hour]?.op || '待机';
+      }
+    };
+
+    // 构建 24 小时数组，包含 op、tou、price
+    const hourData = Array.from({ length: 24 }, (_, h) => ({
+      hour: h,
+      op: getOp(h),
+      tou: seriesData[h].tou,
+      price: seriesData[h].price,
+    }));
+
+    // 识别充放窗口（按时间顺序，相同 op 的连续或非连续小时归为一组）
+    type Window = {
+      kind: '充' | '放';
+      hourList: number[];
+      tou: TierId; // 取该窗口第一个小时的 TOU
+      price: number | null;
+      startHour: number; // 用于排序
+    };
+
+    const windows: Window[] = [];
+
+    // 扫描两遍：先找所有充电窗口，再找所有放电窗口
+    ['充', '放'].forEach(targetOp => {
+      const hours = hourData
+        .map((d, idx) => ({ ...d, originalHour: idx }))
+        .filter(d => d.op === targetOp);
+
+      if (hours.length === 0) return;
+
+      // 按时间顺序分组连续小时
+      const groups: number[][] = [];
+      let currentGroup: number[] = [hours[0].originalHour];
+
+      for (let i = 1; i < hours.length; i++) {
+        const prevHour = hours[i - 1].originalHour;
+        const currHour = hours[i].originalHour;
+        
+        // 判断是否连续（考虑跨日：23->0）
+        const isContinuous = currHour === prevHour + 1 || (prevHour === 23 && currHour === 0);
+        
+        if (isContinuous) {
+          currentGroup.push(currHour);
+        } else {
+          groups.push(currentGroup);
+          currentGroup = [currHour];
+        }
+      }
+      groups.push(currentGroup);
+
+      // 处理跨日合并：如果最后一组包含23点，且第一组包含0点，则合并
+      if (groups.length > 1) {
+        const lastGroup = groups[groups.length - 1];
+        const firstGroup = groups[0];
+        if (lastGroup.includes(23) && firstGroup.includes(0)) {
+          // 合并：将第一组接到最后一组后面，并删除第一组
+          groups[groups.length - 1] = [...lastGroup, ...firstGroup];
+          groups.shift();
+        }
+      }
+
+      // 每组作为一个窗口
+      groups.forEach(hourList => {
+        const firstHour = hourList[0];
+        // 对于跨日的情况（包含23和0），startHour使用最小的非23小时，如果没有则用0
+        const nonMidnightHours = hourList.filter(h => h !== 23);
+        const startHour = nonMidnightHours.length > 0 ? Math.min(...nonMidnightHours) : 0;
+        
+        windows.push({
+          kind: targetOp as '充' | '放',
+          hourList,
+          tou: hourData[firstHour].tou,
+          price: hourData[firstHour].price,
+          startHour,
+        });
+      });
+    });
+
+    // 按 startHour 排序，实现充-放-充-放的交替显示
+    windows.sort((a, b) => a.startHour - b.startHour);
+
+    // 转换为表格行格式
+    return windows.map(win => {
+      // 格式化时段：将小时列表转为时间段字符串
+      const formatTimeRanges = (hours: number[]): string => {
+        // 先排序
+        const sorted = [...hours].sort((a, b) => a - b);
+        
+        // 分组连续小时
+        const ranges: string[] = [];
+        let start = sorted[0];
+        let end = sorted[0];
+
+        for (let i = 1; i < sorted.length; i++) {
+          if (sorted[i] === end + 1) {
+            end = sorted[i];
+          } else {
+            // 输出当前范围
+            const startStr = `${String(start).padStart(2, '0')}:00`;
+            const endStr = `${String(end + 1).padStart(2, '0')}:00`;
+            ranges.push(`${startStr}-${endStr}`);
+            start = sorted[i];
+            end = sorted[i];
+          }
+        }
+        // 最后一个范围
+        const startStr = `${String(start).padStart(2, '0')}:00`;
+        const endStr = `${String(end + 1).padStart(2, '0')}:00`;
+        ranges.push(`${startStr}-${endStr}`);
+
+        return ranges.join(',');
+      };
+
+      return {
+        label: `${win.kind}/${win.tou}`,
+        timeRange: formatTimeRanges(win.hourList),
+        hours: win.hourList.length,
+        price: win.price,
+      };
+    });
+  }, [seriesData, viewMode, viewIndex, monthlySchedule, dateRules]);
+
   const updateMonthPrice = (m: number, tou: TierId, value: number | null) => {
     const used = usedTiersByMonth[m];
     if (!used.has(tou)) return; // 未使用的档位不接受修改
@@ -267,8 +401,8 @@ export const PriceEditorPage: React.FC<PriceEditorPageProps> = ({ scheduleData, 
             <thead className="bg-slate-50">
               <tr>
                 <th className="px-2.5 py-1.5 text-left text-xs font-semibold text-slate-600">月份</th>
-                {(['深','谷','平','峰','尖'] as TierId[]).map(t => (
-                  <th key={t} className="px-2 py-1.5 text-center text-xs font-semibold text-slate-600">{t}</th>
+                {(['尖','峰','平','谷','深'] as TierId[]).map(t => (
+                  <th key={t} className="px-1.5 py-1.5 text-center text-xs font-semibold text-slate-600">{t}</th>
                 ))}
                 <th className="px-2 py-1.5 text-center text-xs font-semibold text-slate-600">操作</th>
               </tr>
@@ -277,14 +411,14 @@ export const PriceEditorPage: React.FC<PriceEditorPageProps> = ({ scheduleData, 
               {prices.map((pm, i) => (
                 <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'}>
                   <td className="px-2.5 py-0.5 text-xs text-slate-700">{MONTHS[i]}</td>
-                  {(['深','谷','平','峰','尖'] as TierId[]).map((t) => {
+                  {(['尖','峰','平','谷','深'] as TierId[]).map((t) => {
                     const used = usedTiersByMonth[i].has(t);
                     return (
-                      <td key={t} className="px-1.5 py-0.5">
+                      <td key={t} className="px-1.5 py-0.5 text-center">
                         <input
                           type="number"
                           step="0.0001"
-                          className={`w-24 border rounded px-1.5 py-0.5 text-xs ${used ? 'border-slate-300' : 'border-slate-200 bg-slate-50 text-slate-400'}`}
+                          className={`w-24 border rounded px-1.5 py-0.5 text-xs text-center ${used ? 'border-slate-300' : 'border-slate-200 bg-slate-50 text-slate-400'}`}
                           value={used ? (pm[t] ?? '') : ''}
                           onChange={(e) => used && updateMonthPrice(i, t, parsePrice(e.target.value))}
                           placeholder={used ? "空" : "未使用"}
@@ -333,8 +467,12 @@ export const PriceEditorPage: React.FC<PriceEditorPageProps> = ({ scheduleData, 
         </div>
       </div>
 
-      {/* 时序图 */}
+      {/* 时序图小标题与说明 */}
       <div id="section-price-chart" className="scroll-mt-24 bg-white rounded-xl shadow-lg p-4">
+        <div className="mb-2">
+          <h3 className="text-base font-semibold text-slate-800">分时电价时序图</h3>
+          <div className="text-xs text-slate-500 mb-1">展示当前月份或规则下的分时电价变化，色块对应各分时段。右上图例可查看分档含义。</div>
+        </div>
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-3">
             <label className="text-sm text-slate-700 flex items-center gap-2">
@@ -377,6 +515,41 @@ export const PriceEditorPage: React.FC<PriceEditorPageProps> = ({ scheduleData, 
         </div>
 
         <PriceStepChart data={seriesData} height={360} />
+
+        {/* 储能窗口汇总表 */}
+        {summaryTableData.length > 0 && (
+          <div className="mt-4 border-t border-slate-200 pt-4">
+            <h4 className="text-sm font-semibold text-slate-800 mb-2">储能窗口汇总</h4>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-xs text-left text-slate-700 border border-slate-200">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50">
+                    <th className="px-3 py-2 border-r border-slate-200">档位</th>
+                    <th className="px-3 py-2 border-r border-slate-200">时段</th>
+                    <th className="px-3 py-2 border-r border-slate-200 text-right">有效小时数</th>
+                    <th className="px-3 py-2 text-right">电价</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summaryTableData.map((row, idx) => {
+                    const priceDisplay = row.price != null && Number.isFinite(row.price)
+                      ? row.price.toFixed(5)
+                      : '-';
+                    
+                    return (
+                      <tr key={idx} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                        <td className="px-3 py-2 border-r border-slate-200">{row.label}</td>
+                        <td className="px-3 py-2 border-r border-slate-200 font-mono text-slate-600">{row.timeRange}</td>
+                        <td className="px-3 py-2 border-r border-slate-200 text-right">{row.hours}</td>
+                        <td className="px-3 py-2 text-right font-mono">{priceDisplay}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

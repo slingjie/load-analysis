@@ -602,7 +602,7 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
 
     return (
     <div className="space-y-6">
-      <div id="section-profit-intro" className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 space-y-3">
+      <div id="section-profit-intro" className="scroll-mt-24 p-4 bg-white rounded-xl shadow-sm border border-slate-200 space-y-3">
         <h2 className="text-lg font-semibold text-slate-800">储能收益与负荷对比</h2>
         <p className="text-sm text-slate-600">
           本页基于与储能次数计算相同的 TOU 配置与负荷数据，按日查看“引入储能前后”的负荷曲线与收益指标。
@@ -613,7 +613,7 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
       {(selectedDayProfitMain || monthProfitMain || yearProfitMain) && (
         <div
           id="section-profit-summary"
-          className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3 text-sm"
+          className="scroll-mt-24 grid grid-cols-1 md:grid-cols-3 gap-3 mt-3 text-sm"
         >
           {selectedDayProfitMain && selectedDate && (
             <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-100">
@@ -658,7 +658,7 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
       {cyclesResult && monthlySummaryRows.length > 0 && (
         <div
           id="section-profit-monthly-summary"
-          className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 space-y-2 text-sm"
+          className="scroll-mt-24 p-4 bg-white rounded-xl shadow-sm border border-slate-200 space-y-2 text-sm"
         >
           <h3 className="text-sm font-semibold text-slate-800">月度与年度充放电量与收益汇总</h3>
           <div className="overflow-x-auto">
@@ -697,7 +697,7 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
         </div>
       )}
 
-      <div id="section-profit-selector" className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 space-y-4">
+      <div id="section-profit-selector" className="scroll-mt-24 p-4 bg-white rounded-xl shadow-sm border border-slate-200 space-y-4">
         <div className="flex flex-col md:flex-row md:items-center gap-3 justify-between">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-slate-700">选择日期：</span>
@@ -731,36 +731,41 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
       </div>
 
       {curvesData && (
-        <div id="section-profit-curves" className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-800">负荷曲线对比（同一张图）</h3>
-            <div className="flex items-center gap-3 text-xs text-slate-700">
-              <label className="inline-flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  className="rounded border-slate-300"
-                  checked={showOriginal}
-                  onChange={e => setShowOriginal(e.target.checked)}
-                />
-                <span>原始负荷曲线</span>
-              </label>
-              <label className="inline-flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  className="rounded border-slate-300"
-                  checked={showWithStorage}
-                  onChange={e => setShowWithStorage(e.target.checked)}
-                />
-                <span>引入储能后的负荷曲线</span>
-              </label>
+          <div id="section-profit-curves" className="scroll-mt-24 p-4 bg-white rounded-xl shadow-sm border border-slate-200 space-y-3">
+            {/* 小标题与 Toplist 说明 */}
+            <div className="mb-2">
+              <h3 className="text-base font-semibold text-slate-800">日负荷时序图</h3>
+              <div className="text-xs text-slate-500 mb-1">原始负荷与储能后负荷曲线对比，支持切换显示。Toplist：可通过下方分档汇总表查看各分时段电量与电费节省情况。</div>
             </div>
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-slate-800">负荷曲线对比（同一张图）</h3>
+              <div className="flex items-center gap-3 text-xs text-slate-700">
+                <label className="inline-flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    className="rounded border-slate-300"
+                    checked={showOriginal}
+                    onChange={e => setShowOriginal(e.target.checked)}
+                  />
+                  <span>原始负荷曲线</span>
+                </label>
+                <label className="inline-flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    className="rounded border-slate-300"
+                    checked={showWithStorage}
+                    onChange={e => setShowWithStorage(e.target.checked)}
+                  />
+                  <span>引入储能后的负荷曲线</span>
+                </label>
+              </div>
+            </div>
+            <div ref={combinedChartRef} style={{ width: '100%', height: 260 }} />
           </div>
-          <div ref={combinedChartRef} style={{ width: '100%', height: 260 }} />
-        </div>
       )}
 
       {curvesData && (
-        <div id="section-profit-metrics" className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 space-y-2 text-sm">
+        <div id="section-profit-metrics" className="scroll-mt-24 p-4 bg-white rounded-xl shadow-sm border border-slate-200 space-y-2 text-sm">
           <h3 className="text-sm font-semibold text-slate-800">当日关键指标</h3>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <div>
@@ -806,10 +811,12 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
       )}
 
       {curvesData && touRows.length > 0 && (
-        <div id="section-profit-tou" className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 space-y-2 text-sm">
-          <h3 className="text-sm font-semibold text-slate-800">分时电价分档汇总</h3>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-xs text-left text-slate-700">
+          <div id="section-profit-tou" className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 space-y-2 text-sm">
+            {/* Toplist 说明补充 */}
+            <div className="mb-2 text-xs text-slate-500">分时电价分档汇总表，展示各分时段原始与储能后电量、电费及节省金额。</div>
+            <h3 className="text-sm font-semibold text-slate-800">分时电价分档汇总</h3>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-xs text-left text-slate-700">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50">
                   <th className="px-2 py-1">分时档位</th>

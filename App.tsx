@@ -5,7 +5,7 @@ import * as api from './api';
 import { exportScheduleToExcel } from './utils';
 import * as XLSX from 'xlsx';
 import type { LoadDataPoint } from './utils';
-import { analyzeLoadFile } from './loadApi';
+import { analyzeLoadFile, analyzeLoadFileWithProgress } from './loadApi';
 import type { StorageParamsPayload } from './storageApi';
 
 
@@ -25,6 +25,7 @@ import { StorageCyclesPage } from './components/StorageCyclesPage';
 import { StorageProfitPage } from './components/StorageProfitPage';
 import { PriceEditorPage } from './components/PriceEditorPage';
 import { FloatingSectionNav, type SectionItem } from './components/FloatingSectionNav';
+import UploadProgressRing from './components/UploadProgressRing';
 import { useScrollSpy } from './hooks/useScrollSpy';
 
 // 全局未捕获异常与未处理Promise拒绝的兜底日志，辅助定位白屏
@@ -88,6 +89,12 @@ const App: React.FC = () => {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showLoadSlow, setShowLoadSlow] = useState(false);
   const loadFileInputRef = useRef<HTMLInputElement>(null);
+  const [loadUploadProgress, setLoadUploadProgress] = useState(0);
+  const [showUploadProgress, setShowUploadProgress] = useState(false);
+  const [uploadPhase, setUploadPhase] = useState<'idle'|'uploading'|'parsing'|'done'|'error'>('idle');
+  const [uploadEtaSeconds, setUploadEtaSeconds] = useState<number | null>(null);
+  const uploadControllerRef = useRef<{ abort: () => void } | null>(null);
+  const progressSamplesRef = useRef<Array<{ time: number; loaded: number }>>([]);
 
   // --- 悬浮目录：根据当前页面组织小节（仅桌面端展示） ---
   const navSections: SectionItem[] = useMemo(() => {
@@ -108,17 +115,27 @@ const App: React.FC = () => {
           { id: 'section-price-chart', title: '时序图' },
         ];
       case 'analysis':
-        // 本项目中已隐藏上传功能，故不纳入目录
         return [
           { id: 'section-load-hour-curve', title: '小时负荷曲线' },
           { id: 'section-monthly-stacked', title: '月度日均堆叠图' },
+          { id: 'section-yearly-stacked', title: '年度日均堆叠图' },
           { id: 'section-monthly-overlay', title: '电价×月日均（双轴）' },
           { id: 'section-analysis-note', title: '本页说明' },
         ];
       case 'matrix':
         return [
           { id: 'section-matrix-table', title: '日×时矩阵' },
+          { id: 'section-monthly-summary', title: '月度汇总' },
           { id: 'section-matrix-note', title: '本页说明' },
+        ];
+      case 'storage':
+        return [
+          { id: 'section-cycles-upload', title: '上传与测算' },
+          { id: 'section-cycles-params', title: '参数配置' },
+          { id: 'section-cycles-kpi', title: 'KPI概览' },
+          { id: 'section-cycles-stats', title: '统计表格' },
+          { id: 'section-cycles-charts', title: '图表展示' },
+          { id: 'section-cycles-tip', title: '尖放电占比' },
         ];
       case 'quality':
         return loadQuality
@@ -134,7 +151,8 @@ const App: React.FC = () => {
       case 'profit':
         return [
           { id: 'section-profit-intro', title: '功能说明' },
-          { id: 'section-profit-month', title: '收益汇总' },
+          { id: 'section-profit-summary', title: '收益概览' },
+          { id: 'section-profit-monthly-summary', title: '月度汇总' },
           { id: 'section-profit-selector', title: '日期选择' },
           { id: 'section-profit-curves', title: '曲线对比' },
           { id: 'section-profit-metrics', title: '指标对比' },
@@ -683,23 +701,52 @@ const App: React.FC = () => {
       {/* 悬浮导航栏：固定顶部，不随页面滚动 */}
       <header className="fixed top-0 left-0 right-0 z-50 bg-white/90 backdrop-blur border-b border-slate-200">
         <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-2">
-          {/* 顶部行：居中标题 + 右侧上传按钮（绝对定位保证标题真正居中） */}
-          <div className="relative flex items-center">
-            <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold text-slate-800 text-center w-full">
+          {/* 顶部行：居中标题（上传按钮移至导航行左侧） */}
+          <div className="flex items-center justify-center">
+            <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold text-slate-800 text-center">
               Interactive Schedule & Load Analysis
             </h1>
-            <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-2">
+          </div>
+          {/* 导航行：左侧上传按钮 + 右侧标签组 */}
+          <nav className="mt-2 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
               <button
                 onClick={() => loadFileInputRef.current?.click()}
                 disabled={isLoadUploading}
-                className={`px-3 py-1.5 rounded-md font-semibold text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 ${isLoadUploading ? 'opacity-50 cursor-not-allowed' : ''} bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500`}
+                className={`px-4 py-1.5 rounded-md font-semibold text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 ${isLoadUploading ? 'opacity-50 cursor-not-allowed' : ''} bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500`}
               >
-                {isLoadUploading ? '处理中...' : (loadCleanedData.length > 0 ? '重新上传负荷' : '上传负荷文件')}
+                {uploadPhase === 'uploading' ? '上传中...' : uploadPhase === 'parsing' ? '解析中...' : (loadCleanedData.length > 0 ? '重新上传负荷' : '上传负荷文件')}
               </button>
+              {showUploadProgress && (
+                <div className="flex items-center gap-2">
+                  <UploadProgressRing
+                    progress={loadUploadProgress}
+                    status={uploadPhase}
+                    size={34}
+                    stroke={4}
+                    labelOverride={uploadPhase === 'parsing' ? '解析' : undefined}
+                  />
+                  {uploadPhase === 'uploading' && uploadEtaSeconds != null && (
+                    <span className="text-[11px] text-slate-600 w-14">剩余≈{Math.max(1, Math.round(uploadEtaSeconds))}秒</span>
+                  )}
+                  {uploadPhase === 'uploading' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        uploadControllerRef.current?.abort();
+                        setUploadPhase('error');
+                        setLoadError('已取消上传');
+                        setShowUploadProgress(false);
+                        setIsLoadUploading(false);
+                      }}
+                      className="text-[11px] px-2 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-50"
+                    >取消</button>
+                  )}
+                </div>
+              )}
             </div>
-          </div>
-          <nav className="mt-2 flex justify-center">
-            <div className="bg-slate-200 rounded-lg p-1 flex space-x-1">
+            <div className="flex-1 flex justify-center">
+              <div className="bg-slate-200 rounded-lg p-1 flex space-x-1">
               <button 
                 onClick={() => setCurrentPage('editor')} 
                 className={`${navButtonBaseClasses} ${currentPage === 'editor' ? navButtonActiveClasses : navButtonInactiveClasses}`}
@@ -749,6 +796,7 @@ const App: React.FC = () => {
               >
                 Storage Profit
               </button>
+              </div>
             </div>
           </nav>
         </div>
@@ -768,8 +816,35 @@ const App: React.FC = () => {
             disabled={isLoadUploading}
             className={`px-4 py-2 rounded-md font-semibold text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 ${isLoadUploading ? 'opacity-50 cursor-not-allowed' : ''} bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500`}
           >
-            {isLoadUploading ? '处理中...' : (loadCleanedData.length > 0 ? '重新上传负荷文件' : '上传负荷文件（Excel/CSV）')}
+            {uploadPhase === 'uploading' ? '上传中...' : uploadPhase === 'parsing' ? '解析中...' : (loadCleanedData.length > 0 ? '重新上传负荷文件' : '上传负荷文件（Excel/CSV）')}
           </button>
+          {showUploadProgress && (
+            <div className="flex items-center gap-2">
+              <UploadProgressRing
+                progress={loadUploadProgress}
+                status={uploadPhase}
+                size={40}
+                stroke={5}
+                labelOverride={uploadPhase === 'parsing' ? '解析' : undefined}
+              />
+              {uploadPhase === 'uploading' && uploadEtaSeconds != null && (
+                <span className="text-xs text-slate-600">剩余≈{Math.max(1, Math.round(uploadEtaSeconds))}秒</span>
+              )}
+              {uploadPhase === 'uploading' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    uploadControllerRef.current?.abort();
+                    setUploadPhase('error');
+                    setLoadError('已取消上传');
+                    setShowUploadProgress(false);
+                    setIsLoadUploading(false);
+                  }}
+                  className="text-xs px-2 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-50"
+                >取消</button>
+              )}
+            </div>
+          )}
           {loadCleanedData.length > 0 && (
             <span className="text-xs text-green-700">已加载 {loadCleanedData.length} 小时，范围：{loadMeta?.start ? new Date(loadMeta.start).toLocaleString() : '-'} ~ {loadMeta?.end ? new Date(loadMeta.end).toLocaleString() : '-'}</span>
           )}
@@ -785,12 +860,49 @@ const App: React.FC = () => {
             const file = event.target.files?.[0];
             if (!file) return;
             setIsLoadUploading(true);
+            setLoadUploadProgress(0);
+            setShowUploadProgress(true);
+            setUploadPhase('uploading');
+            setUploadEtaSeconds(null);
+            progressSamplesRef.current = [];
             setLoadError(null);
             setLoadCleanedData([]);
             setLoadQuality(null);
             setLoadMeta(null);
             try {
-              const response = await analyzeLoadFile(file);
+              const { promise, abort } = analyzeLoadFileWithProgress(file, (loaded, total) => {
+                const pct = Math.round((loaded / total) * 100);
+                setLoadUploadProgress(pct);
+                const now = performance.now();
+                progressSamplesRef.current.push({ time: now, loaded });
+                // 保留最近 6 个样本
+                if (progressSamplesRef.current.length > 6) {
+                  progressSamplesRef.current.shift();
+                }
+                if (loaded < total) {
+                  // 估算剩余时间
+                  const samples = progressSamplesRef.current;
+                  if (samples.length >= 2) {
+                    const first = samples[0];
+                    const last = samples[samples.length - 1];
+                    const bytesDelta = last.loaded - first.loaded;
+                    const timeDeltaSec = (last.time - first.time) / 1000;
+                    if (bytesDelta > 0 && timeDeltaSec > 0) {
+                      const speed = bytesDelta / timeDeltaSec; // bytes/sec
+                      const remainingBytes = total - loaded;
+                      const eta = remainingBytes / speed;
+                      setUploadEtaSeconds(eta);
+                    }
+                  }
+                } else {
+                  // 上传完成，进入解析阶段
+                  setUploadPhase('parsing');
+                  setUploadEtaSeconds(null);
+                }
+              });
+              uploadControllerRef.current = { abort };
+              const response = await promise;
+              setLoadUploadProgress(100);
               const normalized: LoadDataPoint[] = (response.cleaned_points || [])
                 .map((p) => {
                   const t = p?.timestamp ? new Date(p.timestamp) : null;
@@ -803,15 +915,23 @@ const App: React.FC = () => {
               setLoadCleanedData(normalized);
               setLoadQuality(response.report);
               setLoadMeta(response.meta);
+              setUploadPhase('done');
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err);
               setLoadError(`上传失败：${message}`);
               setLoadCleanedData([]);
               setLoadQuality(null);
               setLoadMeta(null);
+              if (message.includes('取消')) {
+                setUploadPhase('error');
+              } else {
+                setUploadPhase('error');
+              }
             } finally {
               setIsLoadUploading(false);
               setTimeout(() => { if (event.target) (event.target as HTMLInputElement).value = ''; }, 0);
+              // 保持 100% 显示 2 秒后隐藏
+              setTimeout(() => { setShowUploadProgress(false); setUploadPhase('idle'); }, 2000);
             }
           }}
           className="hidden"
