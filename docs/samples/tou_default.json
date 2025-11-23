@@ -1,0 +1,756 @@
+{
+  "version": "1.0",
+  "timezone": "Asia/Shanghai",
+  "price_unit": "CNY/kWh",
+  "default_rule": {
+    "months": [
+      1
+    ],
+    "segments": [
+      {
+        "id": "base-valley-night",
+        "tou_type": "谷",
+        "start": "23:00",
+        "end": "06:00",
+        "price": 0.3,
+        "apply_to_next_day": true,
+        "note": "仅示例用途，实际运行由覆盖规则决定"
+      },
+      {
+        "id": "base-flat-day",
+        "tou_type": "平",
+        "start": "06:00",
+        "end": "23:00",
+        "price": 0.6,
+        "note": "仅示例用途，实际运行由覆盖规则决定"
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "date_range": "01-01~01-31",
+      "segments": [
+        {
+          "id": "jan-valley-night",
+          "tou_type": "谷",
+          "start": "23:00",
+          "end": "06:00",
+          "price": 0.283,
+          "apply_to_next_day": true
+        },
+        {
+          "id": "jan-flat-morning",
+          "tou_type": "平",
+          "start": "06:00",
+          "end": "12:00",
+          "price": 0.6242
+        },
+        {
+          "id": "jan-valley-noon",
+          "tou_type": "谷",
+          "start": "12:00",
+          "end": "14:00",
+          "price": 0.283
+        },
+        {
+          "id": "jan-flat-afternoon",
+          "tou_type": "平",
+          "start": "14:00",
+          "end": "15:00",
+          "price": 0.6242
+        },
+        {
+          "id": "jan-peak-afternoon",
+          "tou_type": "峰",
+          "start": "15:00",
+          "end": "19:00",
+          "price": 1.0896
+        },
+        {
+          "id": "jan-critical-evening",
+          "tou_type": "尖",
+          "start": "19:00",
+          "end": "21:00",
+          "price": 1.2931
+        },
+        {
+          "id": "jan-peak-night",
+          "tou_type": "峰",
+          "start": "21:00",
+          "end": "23:00",
+          "price": 1.0896
+        }
+      ],
+      "note": "1月冬季常规时段"
+    },
+    {
+      "date_range": "01-28~01-31",
+      "segments": [
+        {
+          "id": "jan-holiday-deep",
+          "tou_type": "深",
+          "start": "11:00",
+          "end": "15:00",
+          "price": 0.2,
+          "note": "春节假期深谷电价示例"
+        }
+      ],
+      "note": "春节假期示例（预测 01-28~01-31）"
+    },
+    {
+      "date_range": "02-01~02-28",
+      "segments": [
+        {
+          "id": "feb-valley-night",
+          "tou_type": "谷",
+          "start": "23:00",
+          "end": "06:00",
+          "price": 0.2595,
+          "apply_to_next_day": true
+        },
+        {
+          "id": "feb-peak-morning",
+          "tou_type": "峰",
+          "start": "06:00",
+          "end": "08:00",
+          "price": 1.0128
+        },
+        {
+          "id": "feb-flat-midmorning",
+          "tou_type": "平",
+          "start": "08:00",
+          "end": "11:00",
+          "price": 0.6023
+        },
+        {
+          "id": "feb-valley-noon",
+          "tou_type": "谷",
+          "start": "11:00",
+          "end": "14:00",
+          "price": 0.2595
+        },
+        {
+          "id": "feb-flat-afternoon",
+          "tou_type": "平",
+          "start": "14:00",
+          "end": "16:00",
+          "price": 0.6023
+        },
+        {
+          "id": "feb-peak-evening",
+          "tou_type": "峰",
+          "start": "16:00",
+          "end": "22:00",
+          "price": 1.0128
+        },
+        {
+          "id": "feb-flat-latenight",
+          "tou_type": "平",
+          "start": "22:00",
+          "end": "23:00",
+          "price": 0.6023
+        }
+      ],
+      "note": "2月春季常规时段"
+    },
+    {
+      "date_range": "03-01~03-31",
+      "segments": [
+        {
+          "id": "mar-valley-night",
+          "tou_type": "谷",
+          "start": "23:00",
+          "end": "06:00",
+          "price": 0.3075,
+          "apply_to_next_day": true
+        },
+        {
+          "id": "mar-peak-morning",
+          "tou_type": "峰",
+          "start": "06:00",
+          "end": "08:00",
+          "price": 1.058
+        },
+        {
+          "id": "mar-flat-midmorning",
+          "tou_type": "平",
+          "start": "08:00",
+          "end": "11:00",
+          "price": 0.649
+        },
+        {
+          "id": "mar-valley-noon",
+          "tou_type": "谷",
+          "start": "11:00",
+          "end": "14:00",
+          "price": 0.3075
+        },
+        {
+          "id": "mar-flat-afternoon",
+          "tou_type": "平",
+          "start": "14:00",
+          "end": "16:00",
+          "price": 0.649
+        },
+        {
+          "id": "mar-peak-evening",
+          "tou_type": "峰",
+          "start": "16:00",
+          "end": "22:00",
+          "price": 1.058
+        },
+        {
+          "id": "mar-flat-latenight",
+          "tou_type": "平",
+          "start": "22:00",
+          "end": "23:00",
+          "price": 0.649
+        }
+      ],
+      "note": "3月春季常规时段"
+    },
+    {
+      "date_range": "04-01~04-30",
+      "segments": [
+        {
+          "id": "apr-valley-night",
+          "tou_type": "谷",
+          "start": "23:00",
+          "end": "06:00",
+          "price": 0.3006,
+          "apply_to_next_day": true
+        },
+        {
+          "id": "apr-peak-morning",
+          "tou_type": "峰",
+          "start": "06:00",
+          "end": "08:00",
+          "price": 1.0391
+        },
+        {
+          "id": "apr-flat-midmorning",
+          "tou_type": "平",
+          "start": "08:00",
+          "end": "11:00",
+          "price": 0.6367
+        },
+        {
+          "id": "apr-valley-noon",
+          "tou_type": "谷",
+          "start": "11:00",
+          "end": "14:00",
+          "price": 0.3006
+        },
+        {
+          "id": "apr-flat-afternoon",
+          "tou_type": "平",
+          "start": "14:00",
+          "end": "16:00",
+          "price": 0.6367
+        },
+        {
+          "id": "apr-peak-evening",
+          "tou_type": "峰",
+          "start": "16:00",
+          "end": "22:00",
+          "price": 1.0391
+        },
+        {
+          "id": "apr-flat-latenight",
+          "tou_type": "平",
+          "start": "22:00",
+          "end": "23:00",
+          "price": 0.6367
+        }
+      ],
+      "note": "4月春季常规时段"
+    },
+    {
+      "date_range": "05-01~05-31",
+      "segments": [
+        {
+          "id": "may-valley-night",
+          "tou_type": "谷",
+          "start": "23:00",
+          "end": "06:00",
+          "price": 0.3158,
+          "apply_to_next_day": true
+        },
+        {
+          "id": "may-peak-morning",
+          "tou_type": "峰",
+          "start": "06:00",
+          "end": "08:00",
+          "price": 1.0711
+        },
+        {
+          "id": "may-flat-midmorning",
+          "tou_type": "平",
+          "start": "08:00",
+          "end": "11:00",
+          "price": 0.6595
+        },
+        {
+          "id": "may-valley-noon",
+          "tou_type": "谷",
+          "start": "11:00",
+          "end": "14:00",
+          "price": 0.3158
+        },
+        {
+          "id": "may-flat-afternoon",
+          "tou_type": "平",
+          "start": "14:00",
+          "end": "16:00",
+          "price": 0.6595
+        },
+        {
+          "id": "may-peak-evening",
+          "tou_type": "峰",
+          "start": "16:00",
+          "end": "22:00",
+          "price": 1.0711
+        },
+        {
+          "id": "may-flat-latenight",
+          "tou_type": "平",
+          "start": "22:00",
+          "end": "23:00",
+          "price": 0.6595
+        }
+      ],
+      "note": "5月春季常规时段"
+    },
+    {
+      "date_range": "05-30~05-31",
+      "segments": [
+        {
+          "id": "dragonboat-deep",
+          "tou_type": "深谷",
+          "start": "11:00",
+          "end": "15:00",
+          "price": 0.2,
+          "note": "端午假期深谷电价示例"
+        }
+      ],
+      "note": "端午假期示例（05-30~05-31）"
+    },
+    {
+      "date_range": "06-01~06-30",
+      "segments": [
+        {
+          "id": "jun-valley-night",
+          "tou_type": "谷",
+          "start": "23:00",
+          "end": "06:00",
+          "price": 0.2894,
+          "apply_to_next_day": true
+        },
+        {
+          "id": "jun-peak-morning",
+          "tou_type": "峰",
+          "start": "06:00",
+          "end": "08:00",
+          "price": 1.076
+        },
+        {
+          "id": "jun-flat-midmorning",
+          "tou_type": "平",
+          "start": "08:00",
+          "end": "11:00",
+          "price": 0.6474
+        },
+        {
+          "id": "jun-valley-noon",
+          "tou_type": "谷",
+          "start": "11:00",
+          "end": "14:00",
+          "price": 0.2894
+        },
+        {
+          "id": "jun-flat-afternoon",
+          "tou_type": "平",
+          "start": "14:00",
+          "end": "16:00",
+          "price": 0.6474
+        },
+        {
+          "id": "jun-peak-evening",
+          "tou_type": "峰",
+          "start": "16:00",
+          "end": "22:00",
+          "price": 1.076
+        },
+        {
+          "id": "jun-flat-latenight",
+          "tou_type": "平",
+          "start": "22:00",
+          "end": "23:00",
+          "price": 0.6474
+        }
+      ],
+      "note": "6月春夏交替常规时段"
+    },
+    {
+      "date_range": "07-01~07-31",
+      "segments": [
+        {
+          "id": "jul-flat-early",
+          "tou_type": "平",
+          "start": "00:00",
+          "end": "02:00",
+          "price": 0.6652
+        },
+        {
+          "id": "jul-valley-night",
+          "tou_type": "谷",
+          "start": "02:00",
+          "end": "09:00",
+          "price": 0.3069
+        },
+        {
+          "id": "jul-flat-midmorning",
+          "tou_type": "平",
+          "start": "09:00",
+          "end": "11:00",
+          "price": 0.6652
+        },
+        {
+          "id": "jul-valley-noon",
+          "tou_type": "谷",
+          "start": "11:00",
+          "end": "13:00",
+          "price": 0.3069
+        },
+        {
+          "id": "jul-flat-afternoon",
+          "tou_type": "平",
+          "start": "13:00",
+          "end": "16:00",
+          "price": 0.6652
+        },
+        {
+          "id": "jul-peak-evening",
+          "tou_type": "峰",
+          "start": "16:00",
+          "end": "22:00",
+          "price": 1.154
+        },
+        {
+          "id": "jul-peak-late",
+          "tou_type": "峰",
+          "start": "22:00",
+          "end": "24:00",
+          "price": 1.154
+        }
+      ],
+      "note": "7月夏季常规时段"
+    },
+    {
+      "date_range": "07-15~07-31",
+      "segments": [
+        {
+          "id": "jul-critical-20-22",
+          "tou_type": "尖",
+          "start": "20:00",
+          "end": "22:00",
+          "price": 1.3678,
+          "note": "夏季尖峰时段电价"
+        }
+      ],
+      "note": "夏季尖峰示例（07-15~07-31）"
+    },
+    {
+      "date_range": "08-01~08-31",
+      "segments": [
+        {
+          "id": "aug-flat-early",
+          "tou_type": "平",
+          "start": "00:00",
+          "end": "02:00",
+          "price": 0.6757
+        },
+        {
+          "id": "aug-valley-night",
+          "tou_type": "谷",
+          "start": "02:00",
+          "end": "09:00",
+          "price": 0.3174
+        },
+        {
+          "id": "aug-flat-midmorning",
+          "tou_type": "平",
+          "start": "09:00",
+          "end": "11:00",
+          "price": 0.6757
+        },
+        {
+          "id": "aug-valley-noon",
+          "tou_type": "谷",
+          "start": "11:00",
+          "end": "13:00",
+          "price": 0.3174
+        },
+        {
+          "id": "aug-flat-afternoon",
+          "tou_type": "平",
+          "start": "13:00",
+          "end": "16:00",
+          "price": 0.6757
+        },
+        {
+          "id": "aug-peak-evening",
+          "tou_type": "峰",
+          "start": "16:00",
+          "end": "20:00",
+          "price": 1.1645
+        },
+        {
+          "id": "aug-critical-evening",
+          "tou_type": "尖",
+          "start": "20:00",
+          "end": "22:00",
+          "price": 1.3782
+        },
+        {
+          "id": "aug-peak-late",
+          "tou_type": "峰",
+          "start": "22:00",
+          "end": "24:00",
+          "price": 1.1645
+        }
+      ],
+      "note": "8月夏季尖峰常规时段"
+    },
+    {
+      "date_range": "09-01~09-30",
+      "segments": [
+        {
+          "id": "sep-flat-early",
+          "tou_type": "平",
+          "start": "00:00",
+          "end": "02:00",
+          "price": 0.6742
+        },
+        {
+          "id": "sep-valley-night",
+          "tou_type": "谷",
+          "start": "02:00",
+          "end": "09:00",
+          "price": 0.3152
+        },
+        {
+          "id": "sep-flat-midmorning",
+          "tou_type": "平",
+          "start": "09:00",
+          "end": "11:00",
+          "price": 0.6742
+        },
+        {
+          "id": "sep-valley-noon",
+          "tou_type": "谷",
+          "start": "11:00",
+          "end": "13:00",
+          "price": 0.3152
+        },
+        {
+          "id": "sep-flat-afternoon",
+          "tou_type": "平",
+          "start": "13:00",
+          "end": "16:00",
+          "price": 0.6742
+        },
+        {
+          "id": "sep-peak-evening",
+          "tou_type": "峰",
+          "start": "16:00",
+          "end": "24:00",
+          "price": 1.1639
+        }
+      ],
+      "note": "9月夏末常规时段"
+    },
+    {
+      "date_range": "10-01~10-31",
+      "segments": [
+        {
+          "id": "oct-valley-night",
+          "tou_type": "谷",
+          "start": "23:00",
+          "end": "06:00",
+          "price": 0.3078,
+          "apply_to_next_day": true
+        },
+        {
+          "id": "oct-peak-morning",
+          "tou_type": "峰",
+          "start": "06:00",
+          "end": "08:00",
+          "price": 1.0944
+        },
+        {
+          "id": "oct-flat-midmorning",
+          "tou_type": "平",
+          "start": "08:00",
+          "end": "11:00",
+          "price": 0.6658
+        },
+        {
+          "id": "oct-valley-noon",
+          "tou_type": "谷",
+          "start": "11:00",
+          "end": "14:00",
+          "price": 0.3078
+        },
+        {
+          "id": "oct-flat-afternoon",
+          "tou_type": "平",
+          "start": "14:00",
+          "end": "16:00",
+          "price": 0.6658
+        },
+        {
+          "id": "oct-peak-evening",
+          "tou_type": "峰",
+          "start": "16:00",
+          "end": "22:00",
+          "price": 1.0944
+        },
+        {
+          "id": "oct-flat-latenight",
+          "tou_type": "平",
+          "start": "22:00",
+          "end": "23:00",
+          "price": 0.6658
+        }
+      ],
+      "note": "10月秋季常规时段"
+    },
+    {
+      "date_range": "11-01~11-30",
+      "segments": [
+        {
+          "id": "nov-valley-night",
+          "tou_type": "谷",
+          "start": "23:00",
+          "end": "06:00",
+          "price": 0.285,
+          "apply_to_next_day": true
+        },
+        {
+          "id": "nov-peak-morning",
+          "tou_type": "峰",
+          "start": "06:00",
+          "end": "08:00",
+          "price": 1.0724
+        },
+        {
+          "id": "nov-flat-midmorning",
+          "tou_type": "平",
+          "start": "08:00",
+          "end": "11:00",
+          "price": 0.6434
+        },
+        {
+          "id": "nov-valley-noon",
+          "tou_type": "谷",
+          "start": "11:00",
+          "end": "14:00",
+          "price": 0.285
+        },
+        {
+          "id": "nov-flat-afternoon",
+          "tou_type": "平",
+          "start": "14:00",
+          "end": "16:00",
+          "price": 0.6434
+        },
+        {
+          "id": "nov-peak-evening",
+          "tou_type": "峰",
+          "start": "16:00",
+          "end": "22:00",
+          "price": 1.0724
+        },
+        {
+          "id": "nov-flat-latenight",
+          "tou_type": "平",
+          "start": "22:00",
+          "end": "23:00",
+          "price": 0.6434
+        }
+      ],
+      "note": "11月秋季常规时段"
+    },
+    {
+      "date_range": "12-01~12-31",
+      "segments": [
+        {
+          "id": "dec-valley-night",
+          "tou_type": "谷",
+          "start": "23:00",
+          "end": "06:00",
+          "price": 0.2875,
+          "apply_to_next_day": true
+        },
+        {
+          "id": "dec-peak-morning",
+          "tou_type": "峰",
+          "start": "06:00",
+          "end": "12:00",
+          "price": 1.1335
+        },
+        {
+          "id": "dec-valley-noon",
+          "tou_type": "谷",
+          "start": "12:00",
+          "end": "14:00",
+          "price": 0.2875
+        },
+        {
+          "id": "dec-flat-afternoon",
+          "tou_type": "平",
+          "start": "14:00",
+          "end": "15:00",
+          "price": 0.6454
+        },
+        {
+          "id": "dec-peak-evening",
+          "tou_type": "峰",
+          "start": "15:00",
+          "end": "19:00",
+          "price": 1.1335
+        },
+        {
+          "id": "dec-peak-evening2",
+          "tou_type": "峰",
+          "start": "19:00",
+          "end": "21:00",
+          "price": 1.1335
+        },
+        {
+          "id": "dec-flat-night",
+          "tou_type": "平",
+          "start": "21:00",
+          "end": "23:00",
+          "price": 0.6454
+        }
+      ],
+      "note": "12月冬季常规时段"
+    },
+    {
+      "date_range": "12-15~12-31",
+      "segments": [
+        {
+          "id": "dec-critical-19-21",
+          "tou_type": "尖",
+          "start": "19:00",
+          "end": "21:00",
+          "price": 1.347,
+          "note": "冬季尖峰电价"
+        }
+      ],
+      "note": "冬季尖峰示例（12-15~12-31）"
+    }
+  ]
+}
