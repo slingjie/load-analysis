@@ -13,6 +13,8 @@ from .schemas import (
     CleanedPoint,
     LoadAnalysisResponse,
     MetaInfo,
+    ProjectSummaryRequest,
+    ProjectSummaryResponse,
     QualityReport,
     StorageCyclesDay,
     StorageCyclesMonth,
@@ -707,4 +709,70 @@ async def compute_storage_curves(
         points_original=points_original,
         points_with_storage=points_with_storage,
         summary=summary,
+    )
+
+
+@app.post("/api/deepseek/project-summary", response_model=ProjectSummaryResponse)
+async def generate_project_summary_endpoint(
+    request: ProjectSummaryRequest,
+) -> ProjectSummaryResponse:
+    """
+    生成项目评估报告（基于 DeepSeek）。
+    
+    前端传入项目基本信息与各模块可选数据，后端调用 DeepSeek API 生成 Markdown 报告。
+    """
+    from datetime import datetime, timezone
+    from .services.deepseek_summary import generate_project_summary, DeepSeekError
+    
+    # 构建项目信息
+    project_info = {
+        "name": request.project_name,
+        "location": request.project_location,
+        "periodStart": request.period_start,
+        "periodEnd": request.period_end,
+        "periodDescription": f"{request.period_start} 至 {request.period_end}",
+        "loadDataSource": "用户提供的 CSV 数据",
+        "touSource": "当前 TOU 配置",
+        "simulationVersion": "v1.0",
+        "reportDate": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+    }
+    
+    try:
+        markdown_report = await generate_project_summary(
+            project_info=project_info,
+            load_profile=request.load_profile,
+            tou_config=request.tou_config,
+            storage_config=request.storage_config,
+            storage_results=request.storage_results,
+            quality_report=request.quality_report,
+        )
+    except DeepSeekError as exc:
+        logger.exception("生成项目评估报告失败")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"生成报告失败: {str(exc)}",
+        ) from exc
+    
+    # 生成报告 ID
+    report_id = f"report_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    
+    # 从 storage_results 提取关键摘要（如有）
+    summary_dict = {}
+    if request.storage_results:
+        summary_dict = {
+            "firstYearRevenue": request.storage_results.get("firstYearRevenueDetail", ""),
+            "dailyCycles": request.storage_results.get("dailyCycles", ""),
+            "utilizationHoursRange": request.storage_results.get("utilizationHoursRangeDetail", ""),
+            "loadDataCompleteness": request.quality_report.get("loadMissingRateDescription", "") if request.quality_report else "",
+            "overallConclusion": "请参考报告正文",
+        }
+    
+    return ProjectSummaryResponse(
+        report_id=report_id,
+        project_name=request.project_name,
+        period_start=request.period_start,
+        period_end=request.period_end,
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        markdown=markdown_report,
+        summary=summary_dict,
     )

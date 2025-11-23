@@ -186,6 +186,19 @@ def build_quality_report(raw: pd.DataFrame) -> Tuple[Dict, Dict]:
     timestamps = raw_valid["timestamp"]
     time_range_start = timestamps.min()
     time_range_end = timestamps.max()
+    
+    # 计算负荷统计数据
+    raw_copy["load"] = pd.to_numeric(raw_copy["load"], errors="coerce")
+    load_valid = raw_copy["load"].dropna()
+    
+    if len(load_valid) > 0:
+        avg_load_kw = float(load_valid.mean())
+        max_load_kw = float(load_valid.max())
+        min_load_kw = float(load_valid.min())
+    else:
+        avg_load_kw = 0.0
+        max_load_kw = 0.0
+        min_load_kw = 0.0
 
     report = {
         "missing": _collect_missing(raw_copy),
@@ -198,6 +211,9 @@ def build_quality_report(raw: pd.DataFrame) -> Tuple[Dict, Dict]:
         "total_records": total_records,
         "start": _format_iso(time_range_start),
         "end": _format_iso(time_range_end),
+        "avg_load_kw": round(avg_load_kw, 2),
+        "max_load_kw": round(max_load_kw, 2),
+        "min_load_kw": round(min_load_kw, 2),
     }
 
     return report, meta

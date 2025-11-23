@@ -24,6 +24,7 @@ import { QualityReportPage } from './components/QualityReportPage';
 import { StorageCyclesPage } from './components/StorageCyclesPage';
 import { StorageProfitPage } from './components/StorageProfitPage';
 import { PriceEditorPage } from './components/PriceEditorPage';
+import { ProjectSummaryPage } from './components/ProjectSummaryPage';
 import { FloatingSectionNav, type SectionItem } from './components/FloatingSectionNav';
 import UploadProgressRing from './components/UploadProgressRing';
 import { useScrollSpy } from './hooks/useScrollSpy';
@@ -63,7 +64,7 @@ const EditModeSelector: React.FC<{
 
 const App: React.FC = () => {
   // --- Page State ---
-  const [currentPage, setCurrentPage] = useState<'editor' | 'price' | 'analysis' | 'matrix' | 'quality' | 'storage' | 'profit'>('editor');
+  const [currentPage, setCurrentPage] = useState<'editor' | 'price' | 'analysis' | 'matrix' | 'quality' | 'storage' | 'profit' | 'summary'>('editor');
   const [profitSelectedDate, setProfitSelectedDate] = useState<string | null>(null);
   const [lastStorageRun, setLastStorageRun] = useState<{
     payload: StorageParamsPayload;
@@ -796,6 +797,13 @@ const App: React.FC = () => {
               >
                 Storage Profit
               </button>
+              <button 
+                onClick={() => setCurrentPage('summary')} 
+                className={`${navButtonBaseClasses} ${currentPage === 'summary' ? navButtonActiveClasses : navButtonInactiveClasses}`}
+                aria-current={currentPage === 'summary' ? 'page' : undefined}
+              >
+                Project Summary
+              </button>
               </div>
             </div>
           </nav>
@@ -1056,6 +1064,14 @@ const App: React.FC = () => {
           storageCyclesPayload={lastStorageRun?.payload ?? null}
           selectedDateFromCycles={profitSelectedDate}
           onSelectedDateConsumed={() => setProfitSelectedDate(null)}
+        />
+      )}
+      {currentPage === 'summary' && (
+        <ProjectSummaryPage
+          loadMeta={loadMeta}
+          loadQuality={loadQuality}
+          storageCyclesResult={lastStorageRun?.response ?? null}
+          storageCyclesPayload={lastStorageRun?.payload ?? null}
         />
       )}
       {/* Storage Cycles 页面保持挂载，避免切换时状态重置 */}

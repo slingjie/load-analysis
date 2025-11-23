@@ -66,6 +66,9 @@ class MetaInfo(BaseModel):
     total_records: int
     start: Optional[str]
     end: Optional[str]
+    avg_load_kw: float = 0.0
+    max_load_kw: float = 0.0
+    min_load_kw: float = 0.0
 
 
 class LoadAnalysisResponse(BaseModel):
@@ -266,4 +269,33 @@ class StorageCurvesResponse(BaseModel):
     points_original: List[StorageCurvesPoint] = Field(description="原始负荷曲线 15 分钟点")
     points_with_storage: List[StorageCurvesPoint] = Field(description="引入储能后的等效负荷曲线 15 分钟点")
     summary: StorageCurvesSummary = Field(description="选定日期的关键指标与收益汇总")
+
+
+class ProjectSummaryRequest(BaseModel):
+    """生成项目评估报告的请求参数"""
+
+    project_name: str = Field(description="项目名称")
+    project_location: str = Field(default="", description="项目地点")
+    period_start: str = Field(description="评估周期开始日期 YYYY-MM-DD")
+    period_end: str = Field(description="评估周期结束日期 YYYY-MM-DD")
+    load_profile: Optional[dict] = Field(default=None, description="负荷特征摘要（可选）")
+    tou_config: Optional[dict] = Field(default=None, description="TOU 配置（可选）")
+    storage_config: Optional[dict] = Field(default=None, description="储能配置（可选）")
+    storage_results: Optional[dict] = Field(default=None, description="储能测算结果（可选）")
+    quality_report: Optional[dict] = Field(default=None, description="数据质量报告（可选）")
+
+
+class ProjectSummaryResponse(BaseModel):
+    """生成项目评估报告的响应"""
+
+    report_id: str = Field(description="报告唯一标识")
+    project_name: str = Field(description="项目名称")
+    period_start: str = Field(description="评估周期开始")
+    period_end: str = Field(description="评估周期结束")
+    generated_at: str = Field(description="生成时间 ISO8601")
+    markdown: str = Field(description="完整报告 Markdown 文本")
+    summary: dict = Field(
+        default_factory=dict,
+        description="关键摘要信息（首年收益、循环次数、利用小时等）",
+    )
 

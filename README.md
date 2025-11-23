@@ -66,9 +66,18 @@ npm install
 # Gemini API 密钥（可选，用于 AI 功能）
 GEMINI_API_KEY=your_api_key_here
 
+# DeepSeek API 密钥（用于项目评估报告生成）
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
+
 # 后端服务地址
 VITE_BACKEND_BASE_URL=http://localhost:8000
 ```
+
+**获取 DeepSeek API Key：**
+1. 访问 [DeepSeek 开放平台](https://platform.deepseek.com/)
+2. 注册并登录账号
+3. 在 API Keys 页面创建新密钥
+4. 将密钥配置到 `.env.local` 或通过环境变量 `DEEPSEEK_API_KEY` 设置
 
 #### 4️⃣ 安装 Python 后端依赖
 
@@ -229,6 +238,25 @@ load-analysis/
   - Excel 数据表格
   - PDF 综合报告
 
+### 5. 🤖 AI 项目评估报告
+
+- **智能报告生成**：
+  - 基于 DeepSeek 大模型自动生成项目评估报告
+  - 面向业主方的专业报告结构（7 章标准格式）
+  - 涵盖负荷特征、TOU 配置、储能配置、收益评估、风险建议
+- **报告内容**：
+  - 项目概况与评估结论
+  - 用户负荷特征与运行情况
+  - 当前 TOU 配置与运行策略
+  - 储能电站配置与模拟方式
+  - 储能充放次数与收益评估
+  - 风险点与优化建议
+  - 附录数据与参数表
+- **导出方式**：
+  - 在线预览 Markdown 格式
+  - 一键复制到剪贴板
+  - 下载 Markdown 文件
+
 ---
 
 ## 🛠️ API 文档
@@ -240,6 +268,7 @@ load-analysis/
 | `/api/load/analyze` | POST | 负荷数据分析 |
 | `/api/storage/calculate` | POST | 储能容量测算 |
 | `/api/price/configure` | POST | 电价配置 |
+| `/api/deepseek/project-summary` | POST | 生成项目评估报告（AI） |
 | `/health` | GET | 服务健康检查 |
 
 ### 完整 API 文档
