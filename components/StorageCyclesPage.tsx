@@ -31,8 +31,12 @@ const computeYearEquivalentCyclesFromDays = (
     if (!year || !month || month < 1 || month > 12) return;
     const idx = month - 1;
     const dateKey = String(d.date);
-    monthDaySets[idx].add(dateKey);
-    monthTotal[idx] += Number(d.cycles ?? 0);
+    const cyclesVal = Number(d.cycles ?? 0);
+    // 只有 cycles > 0 的日期才计入"有效天数"
+    if (cyclesVal > 0) {
+      monthDaySets[idx].add(dateKey);
+    }
+    monthTotal[idx] += cyclesVal;
     if (monthYear[idx] == null) {
       monthYear[idx] = year;
     }
@@ -876,9 +880,17 @@ export const StorageCyclesPage: React.FC<Props> = ({
       if (!year || !month || month < 1 || month > 12) return;
       const idx = month - 1;
       const dateKey = String(d.date);
-      monthDaySets[idx].add(dateKey);
-      yearDaySet.add(dateKey);
-      monthTotal[idx] += Number(d.cycles ?? 0);
+      const cyclesVal = Number(d.cycles ?? 0);
+      // 判断该日期是否有实际数据：cycles > 0 或 profit 存在且非空
+      // 只有有实际数据的日期才计入"有效天数"
+      const hasValidData =
+        cyclesVal > 0 ||
+        (d.profit != null && typeof d.profit === 'object' && Object.keys(d.profit).length > 0);
+      if (hasValidData) {
+        monthDaySets[idx].add(dateKey);
+        yearDaySet.add(dateKey);
+      }
+      monthTotal[idx] += cyclesVal;
       if (monthYear[idx] == null) {
         monthYear[idx] = year;
       }
