@@ -5,10 +5,19 @@ import type {
   DateRule,
   BackendStorageCyclesResponse,
   BackendTipDischargeSummary,
+  CleaningAnalysisResponse,
+  CleaningConfigRequest,
 } from '../types';
 import type { LoadDataPoint } from '../utils';
-import { computeStorageCycles, computeStorageCyclesWithProgress, type StorageParamsPayload } from '../storageApi';
+import {
+  computeStorageCycles,
+  computeStorageCyclesWithProgress,
+  analyzeDataForCleaning,
+  applyDataCleaning,
+  type StorageParamsPayload,
+} from '../storageApi';
 import UploadProgressRing from './UploadProgressRing';
+import CleaningConfirmDialog from './CleaningConfirmDialog';
 
 const CONFIG_STORAGE_PREFIX = 'storageCyclesConfig:';
 const SOLVE_CAPACITY_STEPS = 8; // 反推容量时默认预计算步数（可通过界面修改实际步数）
@@ -124,6 +133,20 @@ export const StorageCyclesPage: React.FC<Props> = ({
     bestYearEqCycles: number;
   } | null>(null);
   const didAutoApplyDefaultRef = useRef(false);
+
+  // ================== 数据清洗相关状态 ==================
+  // 是否启用清洗流程（用户可关闭）
+  const [enableCleaning, setEnableCleaning] = useState(true);
+  // 清洗分析结果
+  const [cleaningAnalysis, setCleaningAnalysis] = useState<CleaningAnalysisResponse | null>(null);
+  // 清洗对话框可见性
+  const [cleaningDialogVisible, setCleaningDialogVisible] = useState(false);
+  // 清洗进行中
+  const [cleaningLoading, setCleaningLoading] = useState(false);
+  // 待处理的文件（用于对话框确认后继续）
+  const pendingFileRef = useRef<File | null>(null);
+  // 清洗后的数据点（用于后续计算）
+  const cleanedPointsRef = useRef<{ timestamp: string; load_kwh: number }[] | null>(null);
 
   // 将 Date 转为“本地朴素时间”字符串（YYYY-MM-DD HH:mm:ss），避免 UTC 偏移与日界错位
   const toLocalNaiveString = (d: Date) => {
@@ -265,20 +288,158 @@ export const StorageCyclesPage: React.FC<Props> = ({
 
     // 勾选了复用但没有可用数据，直接提示并中止
     if (useAnalyzedData && (!externalCleanedData || externalCleanedData.length === 0)) {
-      setError('“负荷分析”页没有可用数据，请先在“负荷分析”页上传并处理，或在本页选择负荷文件。');
+      setError('"负荷分析"页没有可用数据，请先在"负荷分析"页上传并处理，或在本页选择负荷文件。');
       return;
     }
 
+    // ===== 新增：数据清洗流程 =====
+    // 如果启用清洗并且是上传新文件（非复用已分析数据），则先分析数据
+    console.log('[StorageCycles] 清洗流程检查:', { enableCleaning, hasFile: !!file, useAnalyzedData });
+    if (enableCleaning && file && !useAnalyzedData) {
+      try {
+        console.log('[StorageCycles] 开始数据清洗分析...');
+        setLoading(true);
+        setCyclePhase('uploading');
+        setShowCycleRing(true);
+        setCycleProgressPct(10);
+        
+        // 调用后端分析接口
+        console.log('[StorageCycles] 调用 analyzeDataForCleaning API...');
+        const analysis = await analyzeDataForCleaning(file);
+        console.log('[StorageCycles] 分析结果:', analysis);
+        setCycleProgressPct(40);
+        
+        // 判断是否需要用户确认（有零值、负值时段或空值需要用户知晓）
+        const needsConfirm = analysis.zero_spans.length > 0 || 
+                            analysis.negative_spans.length > 0 ||
+                            analysis.null_point_count > 0;
+        
+        console.log('[StorageCycles] needsConfirm:', needsConfirm, {
+          zeroSpans: analysis.zero_spans.length,
+          negativeSpans: analysis.negative_spans.length,
+          nullPoints: analysis.null_point_count,
+        });
+        
+        if (needsConfirm) {
+          // 保存状态，等待用户确认
+          console.log('[StorageCycles] 需要用户确认，显示清洗对话框');
+          setCleaningAnalysis(analysis);
+          pendingFileRef.current = file;
+          setCleaningDialogVisible(true);
+          setLoading(false);
+          setShowCycleRing(false);
+          setCyclePhase('idle');
+          return; // 等待用户在对话框中确认
+        }
+        
+        // 无零值/负值异常，但仍需处理空值
+        // 使用默认配置进行清洗（空值插值，无零值/负值处理）
+        setCycleProgressPct(50);
+        const defaultConfig: CleaningConfigRequest = {
+          null_strategy: 'interpolate',
+          negative_strategy: 'keep',
+          zero_decisions: {},
+        };
+        const cleanResult = await applyDataCleaning(file, defaultConfig);
+        
+        // 保存清洗后的数据点
+        const cleanedPoints = cleanResult.cleaned_points.map(p => ({
+          timestamp: p.timestamp,
+          load_kwh: p.load_kwh,
+        }));
+        
+        console.log('[StorageCycles] 自动清洗完成（无需用户确认）', {
+          nullInterpolated: cleanResult.null_points_interpolated,
+          totalPoints: cleanedPoints.length,
+        });
+        
+        setLoading(false);
+        setShowCycleRing(false);
+        
+        // 使用清洗后的数据继续计算
+        await proceedWithCalculation(file, false, cleanedPoints);
+        return;
+      } catch (e: any) {
+        setLoading(false);
+        setShowCycleRing(false);
+        setCyclePhase('error');
+        setError(`数据分析失败: ${e?.message || '未知错误'}`);
+        return;
+      }
+    }
+
+    // 未启用清洗或使用已分析数据，继续原有的计算流程
+    await proceedWithCalculation(file, useAnalyzedData);
+  };
+
+  // 清洗对话框确认后的回调
+  const handleCleaningConfirm = async (config: CleaningConfigRequest) => {
+    const file = pendingFileRef.current;
+    if (!file) {
+      setError('文件丢失，请重新选择');
+      setCleaningDialogVisible(false);
+      return;
+    }
+
+    try {
+      setCleaningLoading(true);
+      
+      // 调用后端应用清洗
+      const cleanResult = await applyDataCleaning(file, config);
+      
+      // 保存清洗后的数据点
+      cleanedPointsRef.current = cleanResult.cleaned_points.map(p => ({
+        timestamp: p.timestamp,
+        load_kwh: p.load_kwh,
+      }));
+      
+      console.log('[StorageCycles] 清洗完成', {
+        nullInterpolated: cleanResult.null_points_interpolated,
+        zeroKept: cleanResult.zero_spans_kept,
+        zeroInterpolated: cleanResult.zero_spans_interpolated,
+        negativeKept: cleanResult.negative_points_kept,
+      });
+      
+      setCleaningDialogVisible(false);
+      setCleaningLoading(false);
+      
+      // 使用清洗后的数据继续计算
+      await proceedWithCalculation(file, false, cleanedPointsRef.current);
+    } catch (e: any) {
+      setCleaningLoading(false);
+      setError(`数据清洗失败: ${e?.message || '未知错误'}`);
+    }
+  };
+
+  // 清洗对话框取消
+  const handleCleaningCancel = () => {
+    setCleaningDialogVisible(false);
+    pendingFileRef.current = null;
+    setCleaningAnalysis(null);
+  };
+
+  // 抽取计算流程为独立函数
+  const proceedWithCalculation = async (
+    file: File | null,
+    useExternal: boolean,
+    cleanedPoints?: { timestamp: string; load_kwh: number }[],
+  ) => {
     // 仅在有有效数据时构造 points，并按时间排序
-    const pointsPayload = (useAnalyzedData && externalCleanedData && externalCleanedData.length > 0)
-      ? externalCleanedData
-          .slice()
-          .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
-          .map(p => ({
-            timestamp: toLocalNaiveString(p.timestamp),
-            load_kwh: Number(p.load),
-          }))
-      : undefined;
+    let pointsPayload: { timestamp: string; load_kwh: number }[] | undefined;
+    
+    if (cleanedPoints && cleanedPoints.length > 0) {
+      // 使用清洗后的数据
+      pointsPayload = cleanedPoints;
+    } else if (useExternal && externalCleanedData && externalCleanedData.length > 0) {
+      // 使用负荷分析页的数据
+      pointsPayload = externalCleanedData
+        .slice()
+        .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+        .map(p => ({
+          timestamp: toLocalNaiveString(p.timestamp),
+          load_kwh: Number(p.load),
+        }));
+    }
 
     const payload: StorageParamsPayload = {
       storage: {
@@ -325,13 +486,15 @@ export const StorageCyclesPage: React.FC<Props> = ({
       const v = validateParams();
       if (v) { setError(v); return; }
       setLoading(true);
-      setCyclePhase(file ? 'uploading' : 'computing');
+      // 如果有清洗后的数据，不需要上传文件
+      const shouldUploadFile = file && !cleanedPoints;
+      setCyclePhase(shouldUploadFile ? 'uploading' : 'computing');
       setCycleProgressPct(0);
       setShowCycleRing(true);
       setUploadEtaSeconds(null);
       uploadSamplesRef.current = [];
 
-      if (file) {
+      if (shouldUploadFile) {
         const { promise, abort } = computeStorageCyclesWithProgress(file, payload, (loaded, total) => {
           setUploadBytesTotal(total);
           const pct = Math.round((loaded / total) * 100);
@@ -1297,7 +1460,7 @@ export const StorageCyclesPage: React.FC<Props> = ({
     <div className="space-y-8">
       <div id="section-cycles-upload" className="scroll-mt-24 p-6 bg-white rounded-xl shadow-lg space-y-4">
         <div className="flex items-center gap-3">
-          <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={() => setFileName(fileRef.current?.files?.[0]?.name || '')} />
+          <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" className="sr-only" onChange={() => setFileName(fileRef.current?.files?.[0]?.name || '')} />
           <button className="px-3 py-1.5 rounded bg-blue-600 text-white text-sm whitespace-nowrap w-[110px]" onClick={() => fileRef.current?.click()}>
             选择负荷文件
           </button>
@@ -1360,6 +1523,24 @@ export const StorageCyclesPage: React.FC<Props> = ({
               ? '勾选后将复用全局已清洗的小时级负荷数据，无需在本页重复上传。'
               : '当前暂无可复用的“负荷分析”页数据，仅支持通过本页上传负荷文件。'}
           </div>
+        </div>
+
+
+        {/* 数据清洗开关 */}
+        <div className="flex items-center gap-3 text-sm bg-blue-50 p-3 rounded-lg">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={enableCleaning}
+              onChange={e => setEnableCleaning(e.target.checked)}
+            />
+            <span className="font-medium">启用数据清洗</span>
+          </label>
+          <span className="text-xs text-slate-600">
+            {enableCleaning
+              ? '上传文件后将检测零值/负值/空值，由您确认后再计算'
+              : '直接使用原始数据计算，不做任何清洗处理'}
+          </span>
         </div>
 
         {/* 参数表单（简化）：基础参数 + 高级设置折叠 */}
@@ -1714,7 +1895,7 @@ export const StorageCyclesPage: React.FC<Props> = ({
           <input
             type="file"
             ref={importInputRef}
-            className="hidden"
+            className="sr-only"
             accept="application/json"
             onChange={handleImportFile}
           />
@@ -2073,6 +2254,15 @@ export const StorageCyclesPage: React.FC<Props> = ({
           )}
         </div>
       )}
+
+      {/* 数据清洗确认对话框 */}
+      <CleaningConfirmDialog
+        visible={cleaningDialogVisible}
+        analysis={cleaningAnalysis}
+        onConfirm={handleCleaningConfirm}
+        onCancel={handleCleaningCancel}
+        loading={cleaningLoading}
+      />
     </div>
   );
 };

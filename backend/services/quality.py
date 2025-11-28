@@ -12,7 +12,14 @@ def _format_iso(dt: pd.Timestamp) -> str:
     return dt.to_pydatetime().isoformat()
 
 
-def _collect_anomalies(raw: pd.DataFrame, total: int) -> List[Dict]:
+def _collect_anomalies(raw: pd.DataFrame, total: int) -> Tuple[List[Dict], Dict]:
+    """收集异常值统计，并按天聚合异常情况。
+    
+    返回:
+        (anomalies_list, daily_anomaly_summary)
+        - anomalies_list: 原有的异常统计列表
+        - daily_anomaly_summary: 按天聚合的异常详情
+    """
     results: List[Dict] = []
     conditions = {
         "null": raw["load"].isna(),
@@ -20,6 +27,12 @@ def _collect_anomalies(raw: pd.DataFrame, total: int) -> List[Dict]:
         "negative": (raw["load"].fillna(0) < 0) & (raw["load"].notna()),
     }
 
+    # 按天聚合异常统计
+    raw_with_date = raw.copy()
+    raw_with_date["date"] = pd.to_datetime(raw_with_date["timestamp"], errors="coerce").dt.date
+    
+    daily_anomaly_summary: Dict[str, Dict] = {}  # date -> {zero_count, negative_count, null_count}
+    
     for kind, mask in conditions.items():
         count = int(mask.sum())
         ratio = round(count / total, 6) if total else 0.0
@@ -31,17 +44,27 @@ def _collect_anomalies(raw: pd.DataFrame, total: int) -> List[Dict]:
             "ratio": ratio,
             "samples": samples,
         })
+        
+        # 按天聚合
+        if count > 0:
+            dates_with_anomaly = raw_with_date.loc[mask, "date"].dropna()
+            for d in dates_with_anomaly:
+                date_str = str(d)
+                if date_str not in daily_anomaly_summary:
+                    daily_anomaly_summary[date_str] = {"zero_count": 0, "negative_count": 0, "null_count": 0}
+                daily_anomaly_summary[date_str][f"{kind}_count"] += 1
 
-    return results
+    return results, daily_anomaly_summary
 
 
 def _collect_missing(raw: pd.DataFrame) -> Dict:
     """对原始数据进行完整性分析，按月分类统计缺失情况。
 
-    变更点：
-    - 不再基于清洗结果，而是直接分析原始数据。
-    - 构造365天期望窗口，统计缺失的天和小时。
-    - 按月份分类返回缺失情况。
+    逻辑说明：
+    - 以导入数据的最晚一天为锚点，往前推364天（共365天）作为期望窗口
+    - 不区分年份，只要保证导入的数据是完整的按顺序的365天
+    - 统计完全缺失的天数和部分缺失小时数
+    - 按月份分类返回缺失情况
     """
 
     raw = raw.copy()
@@ -52,62 +75,123 @@ def _collect_missing(raw: pd.DataFrame) -> Dict:
         return {
             "missing_days": [],
             "missing_hours_by_month": [],
+            "partial_missing_days": [],
             "summary": {
                 "total_missing_days": 0,
                 "total_missing_hours": 0,
+                "total_partial_missing_days": 0,
+                "expected_days": 365,
+                "actual_days": 0,
+                "completeness_ratio": 0.0,
             }
         }
 
-    # 提取所有存在的小时时间戳
-    timestamps = raw["timestamp"].unique()
-    timestamps = pd.to_datetime(timestamps)
+    # 提取所有存在的小时时间戳（去重并转为小时精度）
+    timestamps = pd.to_datetime(raw["timestamp"].unique())
+    # 转换为小时精度的时间戳
+    hour_timestamps = pd.Series(timestamps).dt.floor("h").unique()
+    hour_timestamps = pd.to_datetime(hour_timestamps)
     
-    if len(timestamps) == 0:
+    if len(hour_timestamps) == 0:
         return {
             "missing_days": [],
             "missing_hours_by_month": [],
+            "partial_missing_days": [],
             "summary": {
                 "total_missing_days": 0,
                 "total_missing_hours": 0,
+                "total_partial_missing_days": 0,
+                "expected_days": 365,
+                "actual_days": 0,
+                "completeness_ratio": 0.0,
             }
         }
 
-    # 构造期望的365天窗口（以最后一天为锚点）
-    end_day = timestamps.max().normalize()
+    # 构造期望的365天窗口（以最后一天为锚点，往前推364天）
+    end_day = hour_timestamps.max().normalize()
     expected_start_day = (end_day - pd.Timedelta(days=364)).normalize()
     expected_days = pd.date_range(expected_start_day, end_day, freq="D")
+    
+    # 构造期望的完整小时序列（365天 × 24小时 = 8760小时）
+    expected_hours = pd.date_range(expected_start_day, end_day + pd.Timedelta(hours=23), freq="h")
+    present_hours_set = set(hour_timestamps)
 
-    # 存在数据的小时集合
-    present_hours = set(timestamps.normalize())
+    # 按天统计：哪些天完全缺失，哪些天部分缺失
+    missing_days: List[str] = []
+    partial_missing_days: List[Dict] = []
+    
+    for day in expected_days:
+        day_start = day
+        day_end = day + pd.Timedelta(hours=23)
+        day_hours = pd.date_range(day_start, day_end, freq="h")
+        
+        present_count = sum(1 for h in day_hours if h in present_hours_set)
+        missing_count = 24 - present_count
+        
+        if present_count == 0:
+            # 完全缺失
+            missing_days.append(day.strftime("%Y-%m-%d"))
+        elif missing_count > 0:
+            # 部分缺失
+            partial_missing_days.append({
+                "date": day.strftime("%Y-%m-%d"),
+                "present_hours": present_count,
+                "missing_hours": missing_count,
+            })
 
-    # 缺失整天：期望日期中完全不在 present_hours 的日期
-    missing_days = [day.strftime("%Y-%m-%d") for day in expected_days if day not in present_hours]
-
-    # 按月分类统计缺失小时
+    # 按月分类统计
     missing_hours_by_month: List[Dict] = []
     total_missing_hours = 0
 
+    # 对齐到期望窗口的月份范围
     for month_start in pd.date_range(expected_start_day, end_day, freq="MS"):
-        month_end = (month_start + pd.DateOffset(months=1)) - pd.Timedelta(days=1)
+        month_end = min(
+            (month_start + pd.DateOffset(months=1)) - pd.Timedelta(days=1),
+            end_day
+        )
         month_days = pd.date_range(month_start.normalize(), month_end.normalize(), freq="D")
 
-        missing_count = sum(1 for day in month_days if day not in present_hours)
+        month_missing_days = 0
+        month_missing_hours = 0
+        
+        for day in month_days:
+            day_start = day
+            day_end = day + pd.Timedelta(hours=23)
+            day_hours = pd.date_range(day_start, day_end, freq="h")
+            
+            present_count = sum(1 for h in day_hours if h in present_hours_set)
+            missing_count = 24 - present_count
+            
+            if present_count == 0:
+                month_missing_days += 1
+            month_missing_hours += missing_count
+
         month_str = month_start.strftime("%Y-%m")
 
-        if missing_count > 0:
+        if month_missing_hours > 0:
             missing_hours_by_month.append({
                 "month": month_str,
-                "missing_days": missing_count,
-                "missing_hours": missing_count * 24,  # 整天缺失 = 24小时
+                "missing_days": month_missing_days,
+                "missing_hours": month_missing_hours,
             })
-            total_missing_hours += missing_count * 24
+            total_missing_hours += month_missing_hours
+
+    # 计算实际覆盖的天数
+    present_days_set = set(pd.to_datetime(h).normalize() for h in present_hours_set)
+    actual_days_in_window = sum(1 for day in expected_days if day in present_days_set)
+    completeness_ratio = actual_days_in_window / 365.0 if 365 > 0 else 0.0
 
     return {
         "missing_days": missing_days,
         "missing_hours_by_month": missing_hours_by_month,
+        "partial_missing_days": partial_missing_days,
         "summary": {
             "total_missing_days": len(missing_days),
             "total_missing_hours": total_missing_hours,
+            "total_partial_missing_days": len(partial_missing_days),
+            "expected_days": 365,
+            "actual_days": actual_days_in_window,
+            "completeness_ratio": round(completeness_ratio, 4),
         }
     }
 
@@ -172,9 +256,18 @@ def build_quality_report(raw: pd.DataFrame) -> Tuple[Dict, Dict]:
             "missing": {
                 "missing_days": [],
                 "missing_hours_by_month": [],
-                "summary": {"total_missing_days": 0, "total_missing_hours": 0}
+                "partial_missing_days": [],
+                "summary": {
+                    "total_missing_days": 0,
+                    "total_missing_hours": 0,
+                    "total_partial_missing_days": 0,
+                    "expected_days": 365,
+                    "actual_days": 0,
+                    "completeness_ratio": 0.0,
+                }
             },
             "anomalies": [],
+            "daily_anomalies": [],
             "continuous_zero_spans": [],
         }, {
             "source_interval_minutes": 0,
@@ -200,9 +293,23 @@ def build_quality_report(raw: pd.DataFrame) -> Tuple[Dict, Dict]:
         max_load_kw = 0.0
         min_load_kw = 0.0
 
+    # 收集异常值统计
+    anomalies_list, daily_anomaly_summary = _collect_anomalies(raw_copy, total_records)
+    
+    # 将按天异常汇总转为列表，便于前端展示
+    daily_anomalies: List[Dict] = []
+    for date_str, counts in sorted(daily_anomaly_summary.items()):
+        daily_anomalies.append({
+            "date": date_str,
+            "zero_count": counts.get("zero_count", 0),
+            "negative_count": counts.get("negative_count", 0),
+            "null_count": counts.get("null_count", 0),
+        })
+
     report = {
         "missing": _collect_missing(raw_copy),
-        "anomalies": _collect_anomalies(raw_copy, total_records),
+        "anomalies": anomalies_list,
+        "daily_anomalies": daily_anomalies,
         "continuous_zero_spans": [],  # 不再分析连续零段
     }
 

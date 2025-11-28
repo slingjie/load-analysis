@@ -271,6 +271,112 @@ class StorageCurvesResponse(BaseModel):
     summary: StorageCurvesSummary = Field(description="选定日期的关键指标与收益汇总")
 
 
+# =========================
+# 数据清洗相关模型
+# =========================
+
+
+class ZeroSpanDetail(BaseModel):
+    """零值时段详情"""
+
+    id: str = Field(description="时段唯一标识")
+    start_time: str = Field(description="开始时间 ISO8601")
+    end_time: str = Field(description="结束时间 ISO8601")
+    duration_hours: float = Field(description="持续时长（小时）")
+    point_count: int = Field(default=0, description="数据点数")
+    prev_day_avg_load: Optional[float] = Field(default=None, description="前一天同时段平均负荷 kW")
+    next_day_avg_load: Optional[float] = Field(default=None, description="后一天同时段平均负荷 kW")
+    prev_month_same_day_avg: Optional[float] = Field(default=None, description="上月同日平均负荷 kW")
+    next_month_same_day_avg: Optional[float] = Field(default=None, description="下月同日平均负荷 kW")
+    weekday: str = Field(default="", description="星期几（中文）")
+    is_holiday: bool = Field(default=False, description="是否节假日")
+    user_decision: Optional[str] = Field(default=None, description="用户判断: normal | abnormal")
+
+
+class NegativeSpanDetail(BaseModel):
+    """负值时段详情"""
+
+    id: str = Field(description="时段唯一标识")
+    date: str = Field(description="日期 YYYY-MM-DD")
+    start_hour: int = Field(description="开始小时")
+    end_hour: int = Field(description="结束小时（半开区间）")
+    min_value: float = Field(description="最小负值 kW")
+    max_value: float = Field(description="最大负值 kW")
+    point_count: int = Field(description="点数")
+    treatment: str = Field(default="keep", description="处理方式: keep | abs | zero")
+
+
+class NullSpanDetail(BaseModel):
+    """空值时段详情"""
+
+    id: str = Field(description="时段唯一标识")
+    start_time: str = Field(description="开始时间 ISO8601")
+    end_time: str = Field(description="结束时间 ISO8601")
+    duration_hours: float = Field(description="持续时长（小时）")
+    point_count: int = Field(description="点数")
+    weekday: str = Field(default="", description="星期几（中文）")
+
+
+class CleaningAnalysisResponse(BaseModel):
+    """清洗分析响应"""
+
+    null_point_count: int = Field(default=0, description="空值点数")
+    null_hours: float = Field(default=0.0, description="空值对应小时数")
+    null_spans: List[NullSpanDetail] = Field(default_factory=list, description="空值时段列表")
+    zero_spans: List[ZeroSpanDetail] = Field(default_factory=list, description="零值时段列表")
+    total_zero_hours: float = Field(default=0.0, description="零值总时长（小时）")
+    negative_spans: List[NegativeSpanDetail] = Field(default_factory=list, description="负值时段列表")
+    total_negative_points: int = Field(default=0, description="负值总点数")
+    total_expected_points: int = Field(default=0, description="期望点数")
+    total_actual_points: int = Field(default=0, description="实际有效点数")
+    completeness_ratio: float = Field(default=0.0, description="数据完整度 0-1")
+
+
+class CleaningConfigRequest(BaseModel):
+    """清洗配置请求"""
+
+    null_strategy: str = Field(default="interpolate", description="空值策略: interpolate | delete | keep")
+    negative_strategy: str = Field(default="keep", description="负值策略: keep | abs | zero")
+    zero_decisions: dict = Field(default_factory=dict, description="零值判断: {span_id: 'normal' | 'abnormal'}")
+
+
+class CleaningResultResponse(BaseModel):
+    """清洗结果响应"""
+
+    null_points_interpolated: int = Field(default=0, description="插值的空值点数")
+    zero_spans_kept: int = Field(default=0, description="保留的零值时段数")
+    zero_spans_interpolated: int = Field(default=0, description="插值的零值时段数")
+    negative_points_kept: int = Field(default=0, description="保留的负值点数")
+    negative_points_modified: int = Field(default=0, description="修改的负值点数")
+    interpolated_count: int = Field(default=0, description="总插值点数")
+    cleaned_points: List[CleanedPoint] = Field(default_factory=list, description="清洗后的数据点")
+
+
+class ComparisonMetrics(BaseModel):
+    """对比指标"""
+
+    actual_cycles: float = Field(default=0.0, description="实际循环总数")
+    equivalent_cycles: float = Field(default=0.0, description="等效循环数")
+    valid_days: int = Field(default=0, description="有效天数")
+    profit: float = Field(default=0.0, description="年度收益")
+
+
+class ComparisonResult(BaseModel):
+    """清洗前后对比结果"""
+
+    original: ComparisonMetrics = Field(description="原始数据指标")
+    cleaned: ComparisonMetrics = Field(description="清洗后指标")
+    diff_actual_cycles: float = Field(default=0.0, description="实际循环差异")
+    diff_actual_cycles_percent: float = Field(default=0.0, description="实际循环差异百分比")
+    diff_equivalent_cycles: float = Field(default=0.0, description="等效循环差异")
+    diff_equivalent_cycles_percent: float = Field(default=0.0, description="等效循环差异百分比")
+    diff_valid_days: int = Field(default=0, description="有效天数差异")
+    diff_profit: float = Field(default=0.0, description="收益差异")
+    diff_profit_percent: float = Field(default=0.0, description="收益差异百分比")
+    recommendation: str = Field(default="cleaned", description="推荐使用: original | cleaned")
+    completeness_ratio: float = Field(default=0.0, description="清洗后数据完整度")
+
+
 class ProjectSummaryRequest(BaseModel):
     """生成项目评估报告的请求参数"""
 

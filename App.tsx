@@ -942,7 +942,7 @@ const App: React.FC = () => {
               setTimeout(() => { setShowUploadProgress(false); setUploadPhase('idle'); }, 2000);
             }
           }}
-          className="hidden"
+          className="sr-only"
           accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
         />
       </div>
@@ -1093,7 +1093,7 @@ const App: React.FC = () => {
             type="file"
             ref={fileInputRef}
             onChange={handleFileChange}
-            className="hidden"
+            className="sr-only"
             accept=".xlsx, application/vnd.openxmlformats-officedocument.spreadsheet.sheet"
         />
       {/* 悬浮目录（固定定位，不随页面滚动改变位置） */}

@@ -1,4 +1,11 @@
-import type { BackendStorageCyclesResponse, BackendStorageCurvesResponse, MonthlyTouPrices } from './types';
+import type {
+  BackendStorageCyclesResponse,
+  BackendStorageCurvesResponse,
+  MonthlyTouPrices,
+  CleaningAnalysisResponse,
+  CleaningConfigRequest,
+  CleaningResultResponse,
+} from './types';
 
 const BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || '').replace(/\/$/, '');
 
@@ -188,4 +195,89 @@ export const fetchStorageCurves = async (
   }
 
   return result as BackendStorageCurvesResponse;
+};
+
+// ===================== 数据清洗相关 API =====================
+
+/**
+ * 分析上传的数据，检测零值、负值时段，返回清洗建议
+ */
+export const analyzeDataForCleaning = async (
+  file: File,
+): Promise<CleaningAnalysisResponse> => {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const url = `${BASE_URL}/api/cleaning/analyze`;
+  console.debug('[storageApi] POST cleaning/analyze', url);
+
+  const response = await fetch(url, {
+    method: 'POST',
+    body: formData,
+  });
+
+  const contentType = response.headers.get('content-type') || '';
+  let result: any = null;
+  let rawText: string | null = null;
+  try {
+    if (contentType.includes('application/json')) {
+      result = await response.json().catch(() => null);
+    } else {
+      rawText = await response.text().catch(() => null);
+      try { result = rawText ? JSON.parse(rawText) : null; } catch { /* ignore */ }
+    }
+  } catch (e) {
+    // ignore parse errors
+  }
+
+  if (!response.ok) {
+    const detail = result?.detail || rawText || `${response.status} ${response.statusText}` || '分析数据失败';
+    console.error('[storageApi] analyzeDataForCleaning failed', { url, status: response.status, detail });
+    throw new Error(detail);
+  }
+
+  return result as CleaningAnalysisResponse;
+};
+
+/**
+ * 应用用户确认的清洗配置，返回清洗后的数据
+ */
+export const applyDataCleaning = async (
+  file: File,
+  config: CleaningConfigRequest,
+): Promise<CleaningResultResponse> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  // 后端期望 payload 字段包含 config 对象
+  formData.append('payload', JSON.stringify({ config }));
+
+  const url = `${BASE_URL}/api/cleaning/apply`;
+  console.debug('[storageApi] POST cleaning/apply', url);
+
+  const response = await fetch(url, {
+    method: 'POST',
+    body: formData,
+  });
+
+  const contentType = response.headers.get('content-type') || '';
+  let result: any = null;
+  let rawText: string | null = null;
+  try {
+    if (contentType.includes('application/json')) {
+      result = await response.json().catch(() => null);
+    } else {
+      rawText = await response.text().catch(() => null);
+      try { result = rawText ? JSON.parse(rawText) : null; } catch { /* ignore */ }
+    }
+  } catch (e) {
+    // ignore parse errors
+  }
+
+  if (!response.ok) {
+    const detail = result?.detail || rawText || `${response.status} ${response.statusText}` || '数据清洗失败';
+    console.error('[storageApi] applyDataCleaning failed', { url, status: response.status, detail });
+    throw new Error(detail);
+  }
+
+  return result as CleaningResultResponse;
 };

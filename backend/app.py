@@ -11,8 +11,15 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .schemas import (
     CleanedPoint,
+    CleaningAnalysisResponse,
+    CleaningConfigRequest,
+    CleaningResultResponse,
+    ComparisonMetrics,
+    ComparisonResult,
     LoadAnalysisResponse,
     MetaInfo,
+    NegativeSpanDetail,
+    NullSpanDetail,
     ProjectSummaryRequest,
     ProjectSummaryResponse,
     QualityReport,
@@ -27,9 +34,11 @@ from .schemas import (
     StorageProfitWithFormulas,
     StorageQC,
     StorageWindowMonthSummary,
+    ZeroSpanDetail,
 )
 from .services import loader, quality
 from .services import cycles as cycles_svc
+from .services import cleaning as cleaning_svc
 
 
 logger = logging.getLogger("load-analysis")
@@ -112,6 +121,216 @@ async def analyze_load(file: UploadFile = File(...)) -> LoadAnalysisResponse:
 
     logger.info("file %s analyzed: records=%s", filename, meta_dict.get("total_records"))
     return response
+
+
+# =========================
+# 数据清洗相关 API
+# =========================
+
+
+@app.post("/api/cleaning/analyze", response_model=CleaningAnalysisResponse)
+async def analyze_for_cleaning(
+    file: UploadFile | None = File(None),
+    payload: str = Form("{}"),
+) -> CleaningAnalysisResponse:
+    """分析数据质量，返回零值/负值/空值详情，供用户确认清洗策略
+    
+    可以通过上传文件或传入 payload.points 数组提供数据
+    """
+    file_bytes: bytes | None = None
+    if file is not None:
+        try:
+            file_bytes = await file.read()
+        except Exception as exc:
+            logger.exception("read file failed")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="failed to read upload file",
+            ) from exc
+
+    payload_obj = _parse_payload(payload)
+    
+    # 构建 DataFrame
+    try:
+        if file_bytes:
+            raw_df = loader.load_dataframe(file_bytes)
+            # loader 返回的 DataFrame 可能是 ['timestamp', 'load'] 列，需要转换为以 timestamp 为索引的格式
+            if "timestamp" in raw_df.columns:
+                raw_df["timestamp"] = pd.to_datetime(raw_df["timestamp"], errors="coerce")
+                load_col = "load" if "load" in raw_df.columns else "load_kw"
+                if load_col != "load_kw" and load_col in raw_df.columns:
+                    raw_df = raw_df.rename(columns={load_col: "load_kw"})
+                raw_df = raw_df.set_index("timestamp").sort_index()
+                if "load_kw" not in raw_df.columns and "load" not in raw_df.columns:
+                    # 取第一列作为负荷列
+                    first_col = raw_df.columns[0] if len(raw_df.columns) > 0 else None
+                    if first_col:
+                        raw_df = raw_df.rename(columns={first_col: "load_kw"})
+            logger.debug("Loaded DataFrame shape: %s, columns: %s, index type: %s", 
+                        raw_df.shape, raw_df.columns.tolist(), type(raw_df.index).__name__)
+        else:
+            points = payload_obj.get("points", [])
+            if not points:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="no file or points provided",
+                )
+            # 从 points 构建 DataFrame
+            df = pd.DataFrame(points)
+            if "timestamp" not in df.columns:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="points must contain timestamp field",
+                )
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            load_col = "load_kwh" if "load_kwh" in df.columns else "load"
+            if load_col not in df.columns:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="points must contain load_kwh or load field",
+                )
+            df = df.rename(columns={load_col: "load_kw"})
+            df = df.set_index("timestamp").sort_index()
+            raw_df = df[["load_kw"]]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("parse data failed")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"parse data failed: {exc}",
+        ) from exc
+
+    # 推断采样间隔
+    interval_minutes = 15
+    if len(raw_df) > 1:
+        diffs = raw_df.index.to_series().diff().dropna()
+        if not diffs.empty:
+            mode_seconds = diffs.dt.total_seconds().mode()
+            if len(mode_seconds) > 0:
+                interval_minutes = int(mode_seconds.iloc[0] / 60)
+                interval_minutes = max(1, min(interval_minutes, 60))
+
+    # 执行清洗分析
+    analysis = cleaning_svc.analyze_data_for_cleaning(raw_df, interval_minutes)
+    analysis_dict = cleaning_svc.analysis_to_dict(analysis)
+    
+    # 转换为响应模型
+    return CleaningAnalysisResponse(
+        null_point_count=analysis_dict["null_point_count"],
+        null_hours=analysis_dict["null_hours"],
+        null_spans=[NullSpanDetail(**span) for span in analysis_dict["null_spans"]],
+        zero_spans=[ZeroSpanDetail(**span) for span in analysis_dict["zero_spans"]],
+        total_zero_hours=analysis_dict["total_zero_hours"],
+        negative_spans=[NegativeSpanDetail(**span) for span in analysis_dict["negative_spans"]],
+        total_negative_points=analysis_dict["total_negative_points"],
+        total_expected_points=analysis_dict["total_expected_points"],
+        total_actual_points=analysis_dict["total_actual_points"],
+        completeness_ratio=analysis_dict["completeness_ratio"],
+    )
+
+
+@app.post("/api/cleaning/apply", response_model=CleaningResultResponse)
+async def apply_cleaning(
+    file: UploadFile | None = File(None),
+    payload: str = Form("{}"),
+) -> CleaningResultResponse:
+    """应用清洗配置，返回清洗后的数据
+    
+    payload 中应包含:
+    - points: 数据点数组（可选，如果不上传文件）
+    - config: 清洗配置
+      - null_strategy: 'interpolate' | 'delete' | 'keep'
+      - negative_strategy: 'keep' | 'abs' | 'zero'
+      - zero_decisions: {span_id: 'normal' | 'abnormal'}
+    """
+    file_bytes: bytes | None = None
+    if file is not None:
+        try:
+            file_bytes = await file.read()
+        except Exception as exc:
+            logger.exception("read file failed")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="failed to read upload file",
+            ) from exc
+
+    payload_obj = _parse_payload(payload)
+    
+    # 构建 DataFrame
+    try:
+        if file_bytes:
+            raw_df = loader.load_dataframe(file_bytes)
+            # 转换列名
+            if "load" in raw_df.columns and "load_kw" not in raw_df.columns:
+                raw_df = raw_df.rename(columns={"load": "load_kw"})
+            raw_df = raw_df.set_index("timestamp") if "timestamp" in raw_df.columns else raw_df
+        else:
+            points = payload_obj.get("points", [])
+            if not points:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="no file or points provided",
+                )
+            df = pd.DataFrame(points)
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            load_col = "load_kwh" if "load_kwh" in df.columns else "load"
+            df = df.rename(columns={load_col: "load_kw"})
+            df = df.set_index("timestamp").sort_index()
+            raw_df = df[["load_kw"]]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("parse data failed")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"parse data failed: {exc}",
+        ) from exc
+
+    # 推断采样间隔
+    interval_minutes = 15
+    if len(raw_df) > 1:
+        diffs = raw_df.index.to_series().diff().dropna()
+        if not diffs.empty:
+            mode_seconds = diffs.dt.total_seconds().mode()
+            if len(mode_seconds) > 0:
+                interval_minutes = int(mode_seconds.iloc[0] / 60)
+                interval_minutes = max(1, min(interval_minutes, 60))
+
+    # 执行清洗分析
+    analysis = cleaning_svc.analyze_data_for_cleaning(raw_df, interval_minutes)
+    
+    # 解析清洗配置
+    config_dict = payload_obj.get("config", {})
+    config = cleaning_svc.CleaningConfig(
+        null_strategy=config_dict.get("null_strategy", "interpolate"),
+        negative_strategy=config_dict.get("negative_strategy", "keep"),
+        zero_decisions=config_dict.get("zero_decisions", {}),
+    )
+    
+    # 应用清洗
+    result = cleaning_svc.apply_cleaning(raw_df, config, analysis, interval_minutes)
+    
+    # 转换清洗后的数据为 CleanedPoint 列表
+    cleaned_points: List[CleanedPoint] = []
+    for ts, row in result.cleaned_df.iterrows():
+        load_val = float(row["load_kw"]) if pd.notna(row["load_kw"]) else 0.0
+        cleaned_points.append(
+            CleanedPoint(
+                timestamp=ts.isoformat(),
+                load_kwh=round(load_val, 6),
+            )
+        )
+    
+    return CleaningResultResponse(
+        null_points_interpolated=result.null_points_interpolated,
+        zero_spans_kept=result.zero_spans_kept,
+        zero_spans_interpolated=result.zero_spans_interpolated,
+        negative_points_kept=result.negative_points_kept,
+        negative_points_modified=result.negative_points_modified,
+        interpolated_count=int(result.interpolated_mask.sum()),
+        cleaned_points=cleaned_points,
+    )
 
 
 @app.get("/health")

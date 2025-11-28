@@ -58,12 +58,23 @@ export interface BackendMissingHoursByMonth {
   missing_hours: number;
 }
 
+export interface BackendPartialMissingDay {
+  date: string;  // YYYY-MM-DD 格式
+  present_hours: number;
+  missing_hours: number;
+}
+
 export interface BackendMissingSummary {
   missing_days: string[];
   missing_hours_by_month: BackendMissingHoursByMonth[];
+  partial_missing_days?: BackendPartialMissingDay[];
   summary: {
     total_missing_days: number;
     total_missing_hours: number;
+    total_partial_missing_days?: number;
+    expected_days?: number;
+    actual_days?: number;
+    completeness_ratio?: number;
   };
 }
 
@@ -76,6 +87,13 @@ export interface BackendValueAnomaly {
   samples: string[];
 }
 
+export interface BackendDailyAnomaly {
+  date: string;  // YYYY-MM-DD 格式
+  zero_count: number;
+  negative_count: number;
+  null_count: number;
+}
+
 export interface BackendContinuousZeroSpan {
   start: string;
   end: string;
@@ -85,6 +103,7 @@ export interface BackendContinuousZeroSpan {
 export interface BackendQualityReport {
   missing: BackendMissingSummary;
   anomalies: BackendValueAnomaly[];
+  daily_anomalies?: BackendDailyAnomaly[];
   continuous_zero_spans: BackendContinuousZeroSpan[];
 }
 
@@ -209,4 +228,85 @@ export interface BackendStorageCyclesResponse {
   window_month_summary?: BackendStorageWindowMonthSummary[];
   // 可选：尖段放电占比分析（前端展示卡片）
   tip_discharge_summary?: BackendTipDischargeSummary;
+}
+
+// ===================== 数据清洗相关类型 =====================
+// 零值时段详情
+export interface ZeroSpanDetail {
+  id: string;                      // 唯一标识符 zero_1, zero_2...
+  start_time: string;              // ISO 时间字符串
+  end_time: string;
+  duration_hours: number;          // 持续时长（小时）
+  point_count: number;             // 零值点数量
+  weekday: string;                 // 星期几（中文）
+  month: number;                   // 月份
+  // 相邻天同时段负荷（帮助用户判断是否正常）
+  prev_day_avg_load: number | null;  // 前一天同时段平均负荷
+  next_day_avg_load: number | null;  // 后一天同时段平均负荷
+  prev_month_same_day_load: number | null;  // 上月同日平均负荷
+  next_month_same_day_load: number | null;  // 下月同日平均负荷
+}
+
+// 负值时段详情
+export interface NegativeSpanDetail {
+  id: string;                      // 唯一标识符 negative_1...
+  start_time: string;
+  end_time: string;
+  duration_hours: number;
+  point_count: number;
+  min_value: number;               // 最小负值
+  avg_value: number;               // 平均值
+  weekday: string;
+  month: number;
+}
+
+// 空值时段详情
+export interface NullSpanDetail {
+  id: string;
+  start_time: string;
+  end_time: string;
+  duration_hours: number;
+  point_count: number;
+  weekday: string;
+}
+
+// 清洗分析响应
+export interface CleaningAnalysisResponse {
+  null_point_count: number;        // 空值点数量
+  null_hours: number;              // 空值对应小时数
+  null_spans: NullSpanDetail[];    // 空值时段列表
+  zero_spans: ZeroSpanDetail[];    // 连续零值时段列表
+  total_zero_hours: number;        // 零值总时长（小时）
+  negative_spans: NegativeSpanDetail[];  // 负值时段列表
+  total_negative_points: number;   // 负值总点数
+  total_expected_points: number;   // 期望点数
+  total_actual_points: number;     // 实际有效点数
+  completeness_ratio: number;      // 数据完整度（0-1）
+}
+
+// 用户对零值时段的判断
+export type ZeroDecision = 'normal' | 'abnormal';  // 正常停机 / 异常缺失
+
+// 用户对负值的处理策略
+export type NegativeStrategy = 'keep' | 'abs' | 'zero';  // 保留 / 取绝对值 / 置零
+export type NullStrategy = 'interpolate' | 'keep' | 'delete';  // 插值 / 保留 / 删除
+
+// 清洗配置请求
+export interface CleaningConfigRequest {
+  null_strategy: NullStrategy;      // 空值处理策略
+  negative_strategy: NegativeStrategy;
+  zero_decisions: Record<string, ZeroDecision>;  // 每个零值时段的决策
+  remember_negative?: boolean;     // 是否记住负值处理偏好
+}
+
+// 清洗结果响应
+export interface CleaningResultResponse {
+  cleaned_points: BackendCleanedLoadPoint[];  // 清洗后的数据点
+  null_points_interpolated: number;   // 空值插值数量
+  zero_spans_kept: number;            // 零值保留时段数
+  zero_spans_interpolated: number;    // 零值插值时段数
+  negative_points_kept: number;       // 负值保留数量
+  negative_points_abs: number;        // 负值取绝对值数量
+  negative_points_zeroed: number;     // 负值置零数量
+  interpolated_mask: boolean[];       // 插值标记
 }

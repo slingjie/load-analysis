@@ -96,7 +96,7 @@ export const EnergyMatrixPage: React.FC<EnergyMatrixPageProps> = ({ scheduleData
             type="file"
             ref={fileInputRef}
             onChange={handleFileChange}
-            className="hidden"
+            className="sr-only"
             accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
           />
           {showSlowNotice && isLoading && (
