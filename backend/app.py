@@ -749,6 +749,14 @@ async def compute_storage_curves(
     storage_cfg = payload_dict.get("storage") if isinstance(payload_dict, dict) else None
     if not isinstance(storage_cfg, dict):
         storage_cfg = {}
+    
+    # 添加日志调试
+    logger.info(
+        "[curves API] storage_cfg received: capacity_kwh=%s, c_rate=%s",
+        storage_cfg.get("capacity_kwh"),
+        storage_cfg.get("c_rate"),
+    )
+    logger.info("[curves API] full storage_cfg: %s", storage_cfg)
 
     strategy_src = payload_dict.get("strategySource") if isinstance(payload_dict, dict) else None
     if not isinstance(strategy_src, dict):
@@ -809,7 +817,7 @@ async def compute_storage_curves(
         daily_masks = {}
         window_debug = None
 
-    # 重用 step15 功率/电量序列
+    # 重用 step15 功率/电量序列，传入 filter_date 以仅计算单日数据，大幅提升性能
     df = cycles_svc.build_step15_power_series(
         series_15m,
         daily_ops=daily_ops,
@@ -818,17 +826,13 @@ async def compute_storage_curves(
         price_series=price_series,
         window_debug=window_debug,
         energy_formula=energy_formula,
+        filter_date=date_str,
     )
     if df.empty:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="no data points after preprocessing")
-
-    # 过滤到指定日期
-    try:
-        df_day = df[df["date_str"] == date_str]
-    except Exception:
-        df_day = pd.DataFrame()
-    if df_day.empty:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"no data for date={date_str}")
+
+    # 使用过滤后的数据（filter_date 已在 build_step15_power_series 中完成过滤）
+    df_day = df
 
     # 原始负荷与储能后的负荷
     dt_hours = 0.25
@@ -839,6 +843,23 @@ async def compute_storage_curves(
 
     load_original = df_day["load_kw"]
     load_with_storage = load_original + p_grid_effect
+
+    # 调试日志：输出关键计算参数
+    p_max_debug = float(storage_cfg.get("capacity_kwh", 0) or 0) * float(storage_cfg.get("c_rate", 0.5) or 0.5)
+    logger.info(
+        "[curves API] DEBUG: p_max=%s, max(p_grid_effect)=%s, min(p_grid_effect)=%s, max(load_with_storage)=%s",
+        p_max_debug,
+        float(p_grid_effect.max()) if not p_grid_effect.empty else 0,
+        float(p_grid_effect.min()) if not p_grid_effect.empty else 0,
+        float(load_with_storage.max()) if not load_with_storage.empty else 0,
+    )
+    # 检查是否有 p_batt_kw 列
+    if "p_batt_kw" in df_day.columns:
+        logger.info(
+            "[curves API] DEBUG: max(p_batt_kw)=%s, min(p_batt_kw)=%s",
+            float(df_day["p_batt_kw"].max()),
+            float(df_day["p_batt_kw"].min()),
+        )
 
     points_original: List[StorageCurvesPoint] = []
     points_with_storage: List[StorageCurvesPoint] = []

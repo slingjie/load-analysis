@@ -201,15 +201,22 @@ export const fetchStorageCurves = async (
 
 /**
  * 分析上传的数据，检测零值、负值时段，返回清洗建议
+ * @param fileOrPoints - 文件对象或数据点数组
  */
 export const analyzeDataForCleaning = async (
-  file: File,
+  fileOrPoints: File | { timestamp: string; load_kwh: number }[],
 ): Promise<CleaningAnalysisResponse> => {
   const formData = new FormData();
-  formData.append('file', file);
+  
+  if (fileOrPoints instanceof File) {
+    formData.append('file', fileOrPoints);
+  } else {
+    // 传入数据点数组
+    formData.append('payload', JSON.stringify({ points: fileOrPoints }));
+  }
 
   const url = `${BASE_URL}/api/cleaning/analyze`;
-  console.debug('[storageApi] POST cleaning/analyze', url);
+  console.debug('[storageApi] POST cleaning/analyze', url, { isFile: fileOrPoints instanceof File, pointsCount: fileOrPoints instanceof File ? 'N/A' : fileOrPoints.length });
 
   const response = await fetch(url, {
     method: 'POST',
@@ -241,18 +248,25 @@ export const analyzeDataForCleaning = async (
 
 /**
  * 应用用户确认的清洗配置，返回清洗后的数据
+ * @param fileOrPoints - 文件对象或数据点数组
+ * @param config - 清洗配置
  */
 export const applyDataCleaning = async (
-  file: File,
+  fileOrPoints: File | { timestamp: string; load_kwh: number }[],
   config: CleaningConfigRequest,
 ): Promise<CleaningResultResponse> => {
   const formData = new FormData();
-  formData.append('file', file);
-  // 后端期望 payload 字段包含 config 对象
-  formData.append('payload', JSON.stringify({ config }));
+  
+  if (fileOrPoints instanceof File) {
+    formData.append('file', fileOrPoints);
+    formData.append('payload', JSON.stringify({ config }));
+  } else {
+    // 传入数据点数组
+    formData.append('payload', JSON.stringify({ points: fileOrPoints, config }));
+  }
 
   const url = `${BASE_URL}/api/cleaning/apply`;
-  console.debug('[storageApi] POST cleaning/apply', url);
+  console.debug('[storageApi] POST cleaning/apply', url, { isFile: fileOrPoints instanceof File });
 
   const response = await fetch(url, {
     method: 'POST',

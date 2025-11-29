@@ -183,6 +183,10 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
       return;
     }
 
+    // 添加日志调试
+    console.log('[StorageProfitPage] handleFetchCurves payload.storage:', payload.storage);
+    console.log('[StorageProfitPage] storageCyclesPayload:', storageCyclesPayload);
+
     setLoading(true);
     setError(null);
     try {
@@ -622,7 +626,7 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
                 {selectedDayProfitMain.profit.toFixed(2)} 元
               </div>
               <div className="mt-1 text-xs text-emerald-700">
-                单位收益：{selectedDayProfitMain.profit_per_kwh.toFixed(3)} 元/kWh
+                日度电收益：{selectedDayProfitMain.profit_per_kwh.toFixed(3)} 元/kWh
               </div>
             </div>
           )}
@@ -635,7 +639,7 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
                 {monthProfitMain.profit.toFixed(2)} 元
               </div>
               <div className="mt-1 text-xs text-sky-700">
-                单位收益：{monthProfitMain.profit_per_kwh.toFixed(3)} 元/kWh
+                日度电收益：{monthProfitMain.profit_per_kwh.toFixed(3)} 元/kWh
               </div>
             </div>
           )}
@@ -648,7 +652,7 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
                 {yearProfitMain.profit.toFixed(2)} 元
               </div>
               <div className="mt-1 text-xs text-slate-700">
-                单位收益：{yearProfitMain.profit_per_kwh.toFixed(3)} 元/kWh
+                日度电收益：{yearProfitMain.profit_per_kwh.toFixed(3)} 元/kWh
               </div>
             </div>
           )}
@@ -669,7 +673,7 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
                   <th className="px-2 py-1 text-right">放电电量 (kWh)</th>
                   <th className="px-2 py-1 text-right">充电电量 (kWh)</th>
                   <th className="px-2 py-1 text-right">净收益 (元)</th>
-                  <th className="px-2 py-1 text-right">单位收益 (元/kWh)</th>
+                  <th className="px-2 py-1 text-right">日度电收益 (元/kWh)</th>
                 </tr>
               </thead>
               <tbody>

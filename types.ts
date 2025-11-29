@@ -306,7 +306,37 @@ export interface CleaningResultResponse {
   zero_spans_kept: number;            // 零值保留时段数
   zero_spans_interpolated: number;    // 零值插值时段数
   negative_points_kept: number;       // 负值保留数量
-  negative_points_abs: number;        // 负值取绝对值数量
-  negative_points_zeroed: number;     // 负值置零数量
-  interpolated_mask: boolean[];       // 插值标记
+  negative_points_modified: number;   // 修改的负值点数（取绝对值或置零）
+  interpolated_count: number;         // 总插值点数
+}
+
+// ==================== 清洗前后对比相关类型 ====================
+
+// 对比指标
+export interface ComparisonMetrics {
+  actual_cycles: number;       // 实际循环总数
+  equivalent_cycles: number;   // 等效循环数
+  valid_days: number;          // 有效天数
+  profit: number;              // 年度收益
+}
+
+// 清洗前后对比结果
+export interface ComparisonResult {
+  original: ComparisonMetrics;   // 原始数据指标
+  cleaned: ComparisonMetrics;    // 清洗后指标
+  diff_actual_cycles: number;           // 实际循环差异
+  diff_actual_cycles_percent: number;   // 实际循环差异百分比
+  diff_equivalent_cycles: number;       // 等效循环差异
+  diff_equivalent_cycles_percent: number; // 等效循环差异百分比
+  diff_valid_days: number;              // 有效天数差异
+  diff_profit: number;                  // 收益差异
+  diff_profit_percent: number;          // 收益差异百分比
+  recommendation: 'original' | 'cleaned'; // 推荐使用
+  completeness_ratio: number;           // 清洗后数据完整度
+  cleaning_actions: {
+    null_points_interpolated: number;
+    zero_spans_kept: number;
+    zero_spans_interpolated: number;
+    negative_points_modified: number;
+  };
 }

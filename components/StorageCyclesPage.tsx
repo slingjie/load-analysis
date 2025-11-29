@@ -7,6 +7,8 @@ import type {
   BackendTipDischargeSummary,
   CleaningAnalysisResponse,
   CleaningConfigRequest,
+  ComparisonResult,
+  CleaningResultResponse,
 } from '../types';
 import type { LoadDataPoint } from '../utils';
 import {
@@ -116,6 +118,8 @@ export const StorageCyclesPage: React.FC<Props> = ({
   const [uploadEtaSeconds, setUploadEtaSeconds] = useState<number | null>(null);
   const cycleAbortRef = useRef<() => void>(() => {});
   const uploadSamplesRef = useRef<Array<{time:number;loaded:number}>>([]);
+  // 步骤提示状态
+  const [progressStep, setProgressStep] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BackendStorageCyclesResponse | null>(null);
   const [savedConfigName, setSavedConfigName] = useState('');
@@ -145,8 +149,22 @@ export const StorageCyclesPage: React.FC<Props> = ({
   const [cleaningLoading, setCleaningLoading] = useState(false);
   // 待处理的文件（用于对话框确认后继续）
   const pendingFileRef = useRef<File | null>(null);
+  // 待处理的数据点（用于复用负荷分析页数据时）
+  const pendingPointsRef = useRef<{ timestamp: string; load_kwh: number }[] | null>(null);
+  // 标记当前清洗的数据来源
+  const [cleaningDataSource, setCleaningDataSource] = useState<'file' | 'external'>('file');
   // 清洗后的数据点（用于后续计算）
   const cleanedPointsRef = useRef<{ timestamp: string; load_kwh: number }[] | null>(null);
+  // 清洗结果统计（用于对比展示）
+  const [cleaningResultStats, setCleaningResultStats] = useState<CleaningResultResponse | null>(null);
+
+  // ================== 清洗前后对比相关状态 ==================
+  // 对比视图是否展开
+  const [showComparison, setShowComparison] = useState(false);
+  // 对比数据
+  const [comparisonData, setComparisonData] = useState<ComparisonResult | null>(null);
+  // 原始数据计算结果（用于对比）
+  const originalResultRef = useRef<BackendStorageCyclesResponse | null>(null);
 
   // 将 Date 转为“本地朴素时间”字符串（YYYY-MM-DD HH:mm:ss），避免 UTC 偏移与日界错位
   const toLocalNaiveString = (d: Date) => {
@@ -293,78 +311,113 @@ export const StorageCyclesPage: React.FC<Props> = ({
     }
 
     // ===== 新增：数据清洗流程 =====
-    // 如果启用清洗并且是上传新文件（非复用已分析数据），则先分析数据
+    // 如果启用清洗，对上传文件或负荷分析页数据进行分析
     console.log('[StorageCycles] 清洗流程检查:', { enableCleaning, hasFile: !!file, useAnalyzedData });
-    if (enableCleaning && file && !useAnalyzedData) {
-      try {
-        console.log('[StorageCycles] 开始数据清洗分析...');
-        setLoading(true);
-        setCyclePhase('uploading');
-        setShowCycleRing(true);
-        setCycleProgressPct(10);
-        
-        // 调用后端分析接口
-        console.log('[StorageCycles] 调用 analyzeDataForCleaning API...');
-        const analysis = await analyzeDataForCleaning(file);
-        console.log('[StorageCycles] 分析结果:', analysis);
-        setCycleProgressPct(40);
-        
-        // 判断是否需要用户确认（有零值、负值时段或空值需要用户知晓）
-        const needsConfirm = analysis.zero_spans.length > 0 || 
-                            analysis.negative_spans.length > 0 ||
-                            analysis.null_point_count > 0;
-        
-        console.log('[StorageCycles] needsConfirm:', needsConfirm, {
-          zeroSpans: analysis.zero_spans.length,
-          negativeSpans: analysis.negative_spans.length,
-          nullPoints: analysis.null_point_count,
-        });
-        
-        if (needsConfirm) {
-          // 保存状态，等待用户确认
-          console.log('[StorageCycles] 需要用户确认，显示清洗对话框');
-          setCleaningAnalysis(analysis);
-          pendingFileRef.current = file;
-          setCleaningDialogVisible(true);
+    
+    if (enableCleaning) {
+      // 准备清洗的数据源
+      let dataForCleaning: File | { timestamp: string; load_kwh: number }[] | null = null;
+      let dataSource: 'file' | 'external' = 'file';
+      
+      if (file && !useAnalyzedData) {
+        dataForCleaning = file;
+        dataSource = 'file';
+      } else if (useAnalyzedData && externalCleanedData && externalCleanedData.length > 0) {
+        // 将负荷分析页数据转换为清洗 API 需要的格式
+        dataForCleaning = externalCleanedData
+          .slice()
+          .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+          .map(p => ({
+            timestamp: toLocalNaiveString(p.timestamp),
+            load_kwh: Number(p.load),
+          }));
+        dataSource = 'external';
+      }
+      
+      if (dataForCleaning) {
+        try {
+          console.log('[StorageCycles] 开始数据清洗分析...', { dataSource });
+          setLoading(true);
+          setCyclePhase('uploading');
+          setShowCycleRing(true);
+          setCycleProgressPct(10);
+          setProgressStep('正在分析数据质量...');
+          
+          // 调用后端分析接口
+          console.log('[StorageCycles] 调用 analyzeDataForCleaning API...');
+          const analysis = await analyzeDataForCleaning(dataForCleaning);
+          console.log('[StorageCycles] 分析结果:', analysis);
+          setCycleProgressPct(40);
+          
+          // 判断是否需要用户确认（有零值、负值时段或空值需要用户知晓）
+          const needsConfirm = analysis.zero_spans.length > 0 || 
+                              analysis.negative_spans.length > 0 ||
+                              analysis.null_point_count > 0;
+          
+          console.log('[StorageCycles] needsConfirm:', needsConfirm, {
+            zeroSpans: analysis.zero_spans.length,
+            negativeSpans: analysis.negative_spans.length,
+            nullPoints: analysis.null_point_count,
+          });
+          
+          if (needsConfirm) {
+            // 保存状态，等待用户确认
+            console.log('[StorageCycles] 需要用户确认，显示清洗对话框');
+            setCleaningAnalysis(analysis);
+            setCleaningDataSource(dataSource);
+            if (dataSource === 'file') {
+              pendingFileRef.current = file;
+              pendingPointsRef.current = null;
+            } else {
+              pendingFileRef.current = null;
+              pendingPointsRef.current = dataForCleaning as { timestamp: string; load_kwh: number }[];
+            }
+            setCleaningDialogVisible(true);
+            setLoading(false);
+            setShowCycleRing(false);
+            setCyclePhase('idle');
+            setProgressStep('');
+            return; // 等待用户在对话框中确认
+          }
+          
+          // 无零值/负值异常，但仍需处理空值
+          // 使用默认配置进行清洗（空值插值，无零值/负值处理）
+          setCycleProgressPct(50);
+          setProgressStep('正在处理数据...');
+          const defaultConfig: CleaningConfigRequest = {
+            null_strategy: 'interpolate',
+            negative_strategy: 'keep',
+            zero_decisions: {},
+          };
+          const cleanResult = await applyDataCleaning(dataForCleaning, defaultConfig);
+          
+          // 保存清洗后的数据点
+          const cleanedPoints = cleanResult.cleaned_points.map(p => ({
+            timestamp: p.timestamp,
+            load_kwh: p.load_kwh,
+          }));
+          
+          console.log('[StorageCycles] 自动清洗完成（无需用户确认）', {
+            nullInterpolated: cleanResult.null_points_interpolated,
+            totalPoints: cleanedPoints.length,
+            dataSource,
+          });
+          
           setLoading(false);
           setShowCycleRing(false);
-          setCyclePhase('idle');
-          return; // 等待用户在对话框中确认
+          setProgressStep('');
+          
+          // 使用清洗后的数据继续计算
+          await proceedWithCalculation(file, false, cleanedPoints);
+          return;
+        } catch (e: any) {
+          setLoading(false);
+          setShowCycleRing(false);
+          setCyclePhase('error');
+          setProgressStep('');
+          setError(`数据分析失败: ${e?.message || '未知错误'}`);
+          return;
         }
-        
-        // 无零值/负值异常，但仍需处理空值
-        // 使用默认配置进行清洗（空值插值，无零值/负值处理）
-        setCycleProgressPct(50);
-        const defaultConfig: CleaningConfigRequest = {
-          null_strategy: 'interpolate',
-          negative_strategy: 'keep',
-          zero_decisions: {},
-        };
-        const cleanResult = await applyDataCleaning(file, defaultConfig);
-        
-        // 保存清洗后的数据点
-        const cleanedPoints = cleanResult.cleaned_points.map(p => ({
-          timestamp: p.timestamp,
-          load_kwh: p.load_kwh,
-        }));
-        
-        console.log('[StorageCycles] 自动清洗完成（无需用户确认）', {
-          nullInterpolated: cleanResult.null_points_interpolated,
-          totalPoints: cleanedPoints.length,
-        });
-        
-        setLoading(false);
-        setShowCycleRing(false);
-        
-        // 使用清洗后的数据继续计算
-        await proceedWithCalculation(file, false, cleanedPoints);
-        return;
-      } catch (e: any) {
-        setLoading(false);
-        setShowCycleRing(false);
-        setCyclePhase('error');
-        setError(`数据分析失败: ${e?.message || '未知错误'}`);
-        return;
       }
     }
 
@@ -375,17 +428,26 @@ export const StorageCyclesPage: React.FC<Props> = ({
   // 清洗对话框确认后的回调
   const handleCleaningConfirm = async (config: CleaningConfigRequest) => {
     const file = pendingFileRef.current;
-    if (!file) {
-      setError('文件丢失，请重新选择');
+    const points = pendingPointsRef.current;
+    
+    // 需要有文件或数据点
+    if (!file && !points) {
+      setError('数据源丢失，请重新操作');
       setCleaningDialogVisible(false);
       return;
     }
+    
+    const dataForCleaning = file || points!;
 
     try {
       setCleaningLoading(true);
+      setShowCycleRing(true);
+      setCyclePhase('computing');
+      setCycleProgressPct(10);
+      setProgressStep('正在应用数据清洗...');
       
       // 调用后端应用清洗
-      const cleanResult = await applyDataCleaning(file, config);
+      const cleanResult = await applyDataCleaning(dataForCleaning, config);
       
       // 保存清洗后的数据点
       cleanedPointsRef.current = cleanResult.cleaned_points.map(p => ({
@@ -393,20 +455,59 @@ export const StorageCyclesPage: React.FC<Props> = ({
         load_kwh: p.load_kwh,
       }));
       
+      // 保存清洗统计（用于对比展示）
+      setCleaningResultStats({
+        cleaned_points: cleanResult.cleaned_points,
+        null_points_interpolated: cleanResult.null_points_interpolated,
+        zero_spans_kept: cleanResult.zero_spans_kept,
+        zero_spans_interpolated: cleanResult.zero_spans_interpolated,
+        negative_points_kept: cleanResult.negative_points_kept,
+        negative_points_modified: cleanResult.negative_points_modified ?? 0,
+        interpolated_count: cleanResult.interpolated_count ?? 0,
+      });
+      
       console.log('[StorageCycles] 清洗完成', {
         nullInterpolated: cleanResult.null_points_interpolated,
         zeroKept: cleanResult.zero_spans_kept,
         zeroInterpolated: cleanResult.zero_spans_interpolated,
         negativeKept: cleanResult.negative_points_kept,
+        negativeModified: cleanResult.negative_points_modified,
       });
       
       setCleaningDialogVisible(false);
       setCleaningLoading(false);
+      setCycleProgressPct(30);
+      setProgressStep('正在计算原始数据基准...');
       
-      // 使用清洗后的数据继续计算
-      await proceedWithCalculation(file, false, cleanedPointsRef.current);
+      // 先计算原始数据的结果（用于对比）
+      // 根据数据来源选择传递文件还是数据点
+      try {
+        console.log('[StorageCycles] 开始计算原始数据结果（用于对比）', { dataSource: cleaningDataSource });
+        let originalResult: BackendStorageCyclesResponse | null = null;
+        if (cleaningDataSource === 'file' && file) {
+          originalResult = await proceedWithCalculationInternal(file, false, undefined, true);
+        } else if (cleaningDataSource === 'external' && points) {
+          // 使用原始数据点（清洗前的）计算
+          originalResult = await proceedWithCalculationInternal(null, false, points, true);
+        }
+        originalResultRef.current = originalResult;
+        console.log('[StorageCycles] 原始数据结果', { cycles: originalResult?.year?.cycles });
+      } catch (e) {
+        console.warn('[StorageCycles] 原始数据计算失败，跳过对比', e);
+        originalResultRef.current = null;
+      }
+      
+      setCycleProgressPct(60);
+      setProgressStep('正在计算清洗后数据...');
+      
+      // 使用清洗后的数据继续计算（会自动生成对比数据）
+      // 注意：直接传递 cleanResult，因为 setCleaningResultStats 是异步的
+      await proceedWithCalculation(null, false, cleanedPointsRef.current, cleanResult);
     } catch (e: any) {
       setCleaningLoading(false);
+      setShowCycleRing(false);
+      setCyclePhase('error');
+      setProgressStep('');
       setError(`数据清洗失败: ${e?.message || '未知错误'}`);
     }
   };
@@ -415,7 +516,134 @@ export const StorageCyclesPage: React.FC<Props> = ({
   const handleCleaningCancel = () => {
     setCleaningDialogVisible(false);
     pendingFileRef.current = null;
+    pendingPointsRef.current = null;
     setCleaningAnalysis(null);
+  };
+
+  // 生成对比数据
+  const generateComparisonData = (
+    originalResult: BackendStorageCyclesResponse,
+    cleanedResult: BackendStorageCyclesResponse,
+    cleanStats: CleaningResultResponse,
+  ) => {
+    // 从结果中提取指标
+    const originalCycles = Number(originalResult.year?.cycles ?? 0);
+    const cleanedCycles = Number(cleanedResult.year?.cycles ?? 0);
+    
+    // 计算有效天数
+    const originalValidDays = originalResult.days?.filter(d => d.cycles > 0).length ?? 0;
+    const cleanedValidDays = cleanedResult.days?.filter(d => d.cycles > 0).length ?? 0;
+    
+    // 计算等效循环数
+    const originalEqCycles = computeYearEquivalentCyclesFromDays(originalResult.days);
+    const cleanedEqCycles = computeYearEquivalentCyclesFromDays(cleanedResult.days);
+    
+    // 简化的收益估算（实际应从后端获取）
+    const originalProfit = originalCycles * 500; // 假设每次循环500元收益
+    const cleanedProfit = cleanedCycles * 500;
+    
+    const comparison: ComparisonResult = {
+      original: {
+        actual_cycles: originalCycles,
+        equivalent_cycles: originalEqCycles,
+        valid_days: originalValidDays,
+        profit: originalProfit,
+      },
+      cleaned: {
+        actual_cycles: cleanedCycles,
+        equivalent_cycles: cleanedEqCycles,
+        valid_days: cleanedValidDays,
+        profit: cleanedProfit,
+      },
+      diff_actual_cycles: cleanedCycles - originalCycles,
+      diff_actual_cycles_percent: originalCycles > 0 
+        ? ((cleanedCycles - originalCycles) / originalCycles) * 100 
+        : 0,
+      diff_equivalent_cycles: cleanedEqCycles - originalEqCycles,
+      diff_equivalent_cycles_percent: originalEqCycles > 0 
+        ? ((cleanedEqCycles - originalEqCycles) / originalEqCycles) * 100 
+        : 0,
+      diff_valid_days: cleanedValidDays - originalValidDays,
+      diff_profit: cleanedProfit - originalProfit,
+      diff_profit_percent: originalProfit > 0 
+        ? ((cleanedProfit - originalProfit) / originalProfit) * 100 
+        : 0,
+      recommendation: cleanedCycles >= originalCycles ? 'cleaned' : 'original',
+      completeness_ratio: cleaningAnalysis?.completeness_ratio ?? 1,
+      cleaning_actions: {
+        null_points_interpolated: cleanStats.null_points_interpolated,
+        zero_spans_kept: cleanStats.zero_spans_kept,
+        zero_spans_interpolated: cleanStats.zero_spans_interpolated,
+        negative_points_modified: cleanStats.negative_points_modified ?? 0,
+      },
+    };
+    
+    setComparisonData(comparison);
+    setShowComparison(true);
+    console.log('[StorageCycles] 对比数据生成完成', comparison);
+  };
+
+  // 内部计算函数（用于获取结果但不更新主状态）
+  const proceedWithCalculationInternal = async (
+    file: File | null,
+    useExternal: boolean,
+    cleanedPoints?: { timestamp: string; load_kwh: number }[],
+    silent: boolean = false,
+  ): Promise<BackendStorageCyclesResponse | null> => {
+    // 仅在有有效数据时构造 points，并按时间排序
+    let pointsPayload: { timestamp: string; load_kwh: number }[] | undefined;
+    
+    if (cleanedPoints && cleanedPoints.length > 0) {
+      pointsPayload = cleanedPoints;
+    } else if (useExternal && externalCleanedData && externalCleanedData.length > 0) {
+      pointsPayload = externalCleanedData
+        .slice()
+        .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+        .map(p => ({
+          timestamp: toLocalNaiveString(p.timestamp),
+          load_kwh: Number(p.load),
+        }));
+    }
+
+    const payload: StorageParamsPayload = {
+      storage: {
+        capacity_kwh: params.capacity_kwh,
+        c_rate: params.c_rate,
+        single_side_efficiency: params.single_side_efficiency,
+        depth_of_discharge: params.depth_of_discharge,
+        soc_min: params.soc_min,
+        soc_max: params.soc_max,
+        reserve_charge_kw: params.reserve_charge_kw,
+        reserve_discharge_kw: params.reserve_discharge_kw,
+        metering_mode: params.metering_mode,
+        transformer_capacity_kva: params.metering_mode === 'transformer_capacity' ? params.transformer_capacity_kva : undefined,
+        transformer_power_factor: params.metering_mode === 'transformer_capacity' ? params.transformer_power_factor : undefined,
+        calc_style: 'window_avg',
+        energy_formula: params.energy_formula,
+        merge_threshold_minutes: params.merge_threshold_minutes,
+      },
+      strategySource: {
+        monthlySchedule: scheduleData.monthlySchedule,
+        dateRules: scheduleData.dateRules,
+      },
+      monthlyTouPrices: scheduleData.prices,
+      points: pointsPayload,
+    };
+
+    try {
+      // 使用文件上传计算
+      if (file) {
+        const { promise } = computeStorageCyclesWithProgress(file, payload, () => {});
+        return await promise;
+      } else {
+        return await computeStorageCycles(null, payload);
+      }
+    } catch (e: any) {
+      if (!silent) {
+        console.error('[StorageCycles] 内部计算失败', e);
+      }
+      return null;
+    }
   };
 
   // 抽取计算流程为独立函数
@@ -423,6 +651,7 @@ export const StorageCyclesPage: React.FC<Props> = ({
     file: File | null,
     useExternal: boolean,
     cleanedPoints?: { timestamp: string; load_kwh: number }[],
+    cleanResultForComparison?: CleaningResultResponse,  // 直接传入清洗结果用于对比
   ) => {
     // 仅在有有效数据时构造 points，并按时间排序
     let pointsPayload: { timestamp: string; load_kwh: number }[] | undefined;
@@ -525,6 +754,13 @@ export const StorageCyclesPage: React.FC<Props> = ({
         onLatestRunChange?.(payload, resp);
         setCyclePhase('done');
         setCycleProgressPct(100);
+        
+        // 如果有原始数据结果和清洗统计，生成对比数据
+        const cleanStats = cleanResultForComparison || cleaningResultStats;
+        if (originalResultRef.current && cleanStats) {
+          console.log('[StorageCycles] 生成对比数据（上传文件分支）', { originalCycles: originalResultRef.current?.year?.cycles, cleanedCycles: resp?.year?.cycles });
+          generateComparisonData(originalResultRef.current, resp, cleanStats);
+        }
       } else {
         // 无文件：直接调用原始 fetch 并使用模拟进度
         setCyclePhase('computing');
@@ -540,17 +776,32 @@ export const StorageCyclesPage: React.FC<Props> = ({
           setResult(resp);
           onLatestRunChange?.(payload, resp);
           setCyclePhase('done');
+          
+          // 如果有原始数据结果和清洗统计，生成对比数据
+          const cleanStats = cleanResultForComparison || cleaningResultStats;
+          console.log('[StorageCycles] 检查对比条件（无文件分支）', { 
+            hasOriginalResult: !!originalResultRef.current, 
+            hasCleanStats: !!cleanStats,
+            cleanResultForComparison: !!cleanResultForComparison,
+            cleaningResultStats: !!cleaningResultStats,
+          });
+          if (originalResultRef.current && cleanStats) {
+            console.log('[StorageCycles] 生成对比数据（无文件分支）', { originalCycles: originalResultRef.current?.year?.cycles, cleanedCycles: resp?.year?.cycles });
+            generateComparisonData(originalResultRef.current, resp, cleanStats);
+          }
         } catch (err: any) {
           window.clearInterval(fakeTimer);
           throw err;
         }
       }
+      setProgressStep('');
     } catch (e: any) {
       setCyclePhase('error');
+      setProgressStep('');
       setError(e?.message || '计算失败');
     } finally {
       setLoading(false);
-      setTimeout(() => { setShowCycleRing(false); setCyclePhase('idle'); }, 2000);
+      setTimeout(() => { setShowCycleRing(false); setCyclePhase('idle'); setProgressStep(''); }, 2000);
     }
   };
 
@@ -1478,6 +1729,10 @@ export const StorageCyclesPage: React.FC<Props> = ({
                   stroke={4}
                   labelOverride={cyclePhase === 'computing' ? '计算' : undefined}
                 />
+                {/* 步骤提示文字 */}
+                {progressStep && (
+                  <span className="text-[12px] text-blue-600 font-medium animate-pulse">{progressStep}</span>
+                )}
                 {cyclePhase === 'uploading' && uploadEtaSeconds != null && (
                   <span className="text-[11px] text-slate-600 w-16">剩余≈{Math.max(1, Math.round(uploadEtaSeconds))}秒</span>
                 )}
@@ -1490,6 +1745,7 @@ export const StorageCyclesPage: React.FC<Props> = ({
                       setError('已取消测算');
                       setShowCycleRing(false);
                       setLoading(false);
+                      setProgressStep('');
                     }}
                     className="text-[11px] px-2 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-50"
                   >取消</button>
@@ -1909,6 +2165,111 @@ export const StorageCyclesPage: React.FC<Props> = ({
 
       {result && (
         <div className="mt-2 space-y-3">
+          {/* 清洗前后对比视图 */}
+          {comparisonData && (
+            <div id="section-cycles-comparison" className="scroll-mt-24 p-4 border rounded-xl bg-gradient-to-r from-blue-50 to-indigo-50 shadow-sm">
+              <div 
+                className="flex items-center justify-between cursor-pointer"
+                onClick={() => setShowComparison(!showComparison)}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">📊</span>
+                  <h3 className="text-sm font-semibold text-slate-800">清洗前后对比分析</h3>
+                  <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">
+                    {comparisonData.recommendation === 'cleaned' ? '推荐使用清洗后数据' : '原始数据表现更好'}
+                  </span>
+                </div>
+                <button className="text-slate-500 hover:text-slate-700">
+                  {showComparison ? '收起 ▲' : '展开 ▼'}
+                </button>
+              </div>
+              
+              {showComparison && (
+                <div className="mt-4 space-y-4">
+                  {/* 核心指标对比表格 */}
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-xs border-collapse bg-white rounded-lg overflow-hidden">
+                      <thead>
+                        <tr className="bg-slate-100">
+                          <th className="px-3 py-2 text-left font-medium text-slate-600">指标</th>
+                          <th className="px-3 py-2 text-right font-medium text-slate-600">原始数据</th>
+                          <th className="px-3 py-2 text-right font-medium text-slate-600">清洗后</th>
+                          <th className="px-3 py-2 text-right font-medium text-slate-600">变化</th>
+                          <th className="px-3 py-2 text-right font-medium text-slate-600">变化%</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr className="border-b border-slate-100">
+                          <td className="px-3 py-2 text-slate-700">实际循环次数</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{comparisonData.original.actual_cycles.toFixed(2)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums font-semibold">{comparisonData.cleaned.actual_cycles.toFixed(2)}</td>
+                          <td className={`px-3 py-2 text-right tabular-nums ${comparisonData.diff_actual_cycles >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {comparisonData.diff_actual_cycles >= 0 ? '+' : ''}{comparisonData.diff_actual_cycles.toFixed(2)}
+                          </td>
+                          <td className={`px-3 py-2 text-right tabular-nums ${comparisonData.diff_actual_cycles_percent >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {comparisonData.diff_actual_cycles_percent >= 0 ? '+' : ''}{comparisonData.diff_actual_cycles_percent.toFixed(2)}%
+                          </td>
+                        </tr>
+                        <tr className="border-b border-slate-100 bg-slate-50/50">
+                          <td className="px-3 py-2 text-slate-700">等效循环次数</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{comparisonData.original.equivalent_cycles.toFixed(2)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums font-semibold">{comparisonData.cleaned.equivalent_cycles.toFixed(2)}</td>
+                          <td className={`px-3 py-2 text-right tabular-nums ${comparisonData.diff_equivalent_cycles >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {comparisonData.diff_equivalent_cycles >= 0 ? '+' : ''}{comparisonData.diff_equivalent_cycles.toFixed(2)}
+                          </td>
+                          <td className={`px-3 py-2 text-right tabular-nums ${comparisonData.diff_equivalent_cycles_percent >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {comparisonData.diff_equivalent_cycles_percent >= 0 ? '+' : ''}{comparisonData.diff_equivalent_cycles_percent.toFixed(2)}%
+                          </td>
+                        </tr>
+                        <tr className="border-b border-slate-100">
+                          <td className="px-3 py-2 text-slate-700">有效天数</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{comparisonData.original.valid_days}</td>
+                          <td className="px-3 py-2 text-right tabular-nums font-semibold">{comparisonData.cleaned.valid_days}</td>
+                          <td className={`px-3 py-2 text-right tabular-nums ${comparisonData.diff_valid_days >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {comparisonData.diff_valid_days >= 0 ? '+' : ''}{comparisonData.diff_valid_days}
+                          </td>
+                          <td className="px-3 py-2 text-right text-slate-400">-</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  
+                  {/* 清洗操作统计 */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                    <div className="p-2 bg-white rounded-lg border border-slate-200">
+                      <div className="text-[10px] text-slate-500">空值插值</div>
+                      <div className="text-sm font-semibold text-slate-800">{comparisonData.cleaning_actions.null_points_interpolated} 个点</div>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200">
+                      <div className="text-[10px] text-slate-500">零值保留</div>
+                      <div className="text-sm font-semibold text-slate-800">{comparisonData.cleaning_actions.zero_spans_kept} 段</div>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200">
+                      <div className="text-[10px] text-slate-500">零值插值</div>
+                      <div className="text-sm font-semibold text-slate-800">{comparisonData.cleaning_actions.zero_spans_interpolated} 段</div>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200">
+                      <div className="text-[10px] text-slate-500">负值处理</div>
+                      <div className="text-sm font-semibold text-slate-800">{comparisonData.cleaning_actions.negative_points_modified} 个点</div>
+                    </div>
+                  </div>
+                  
+                  {/* 数据完整度 */}
+                  <div className="flex items-center gap-2 text-xs text-slate-600">
+                    <span>数据完整度：</span>
+                    <div className="flex-1 bg-slate-200 rounded-full h-2 max-w-xs">
+                      <div 
+                        className="bg-blue-500 h-2 rounded-full transition-all"
+                        style={{ width: `${(comparisonData.completeness_ratio * 100).toFixed(0)}%` }}
+                      />
+                    </div>
+                    <span className="font-medium">{(comparisonData.completeness_ratio * 100).toFixed(1)}%</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {kpiMetrics && (
             <div id="section-cycles-kpi" className="scroll-mt-24 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
               <div className="p-2.5 bg-white rounded-xl shadow-lg border border-slate-200 border-l-4 border-blue-500">

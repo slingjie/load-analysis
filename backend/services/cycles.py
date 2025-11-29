@@ -1147,8 +1147,12 @@ def build_step15_power_series(
     *,
     window_debug: Optional[List[dict]] = None,
     energy_formula: str = "physics",
+    filter_date: Optional[str] = None,
 ) -> pd.DataFrame:
     """构建 15 分钟粒度的功率 / 电量序列，供收益计算和曲线对比复用.
+
+    Args:
+        filter_date: 可选，'YYYY-MM-DD' 格式。若指定，则仅计算该日期的数据，大幅提升单日查询性能。
 
     返回的 DataFrame 以 DatetimeIndex 为索引，至少包含：
     - load_kw: 原始负荷
@@ -1174,12 +1178,22 @@ def build_step15_power_series(
         logger.warning("[profit_step15] series_15m 缺少 load_kw 列，无法计算收益")
         return pd.DataFrame()
 
+    # 若指定 filter_date，提前过滤数据，大幅减少计算量
+    if filter_date:
+        s = s[s.index.strftime("%Y-%m-%d") == filter_date]
+        if s.empty:
+            logger.warning("[profit_step15] filter_date=%s 未找到数据", filter_date)
+            return pd.DataFrame()
+
     # 价格序列对齐，如果不存在则补空列
     if price_series is not None and not price_series.empty:
         p = price_series.copy()
         if not isinstance(p.index, pd.DatetimeIndex):
             p.index = pd.to_datetime(p.index, errors="coerce")
         p = p.sort_index()
+        # 若指定了 filter_date，也过滤价格序列
+        if filter_date:
+            p = p[p.index.strftime("%Y-%m-%d") == filter_date]
         joined = s.join(p[["price", "tier"]], how="left")
     else:
         joined = s.copy()
@@ -1207,6 +1221,17 @@ def build_step15_power_series(
 
     # 储能配置
     cap = float(storage_cfg.get("capacity_kwh", 0) or 0)
+    c_rate = float(storage_cfg.get("c_rate", 0.5) or 0.5)
+    # 计算储能最大功率 p_max = capacity * c_rate
+    p_max = cap * c_rate if cap > 0 and c_rate > 0 else 0.0
+    
+    # 添加详细日志用于调试
+    logger.info(
+        "[build_step15] storage_cfg received: capacity_kwh=%s, c_rate=%s, p_max=%s",
+        cap, c_rate, p_max
+    )
+    logger.info("[build_step15] full storage_cfg: %s", storage_cfg)
+    
     eta = float(storage_cfg.get("single_side_efficiency", 0.9) or 0.9)
     dod_cfg = float(storage_cfg.get("depth_of_discharge", 1.0) or 1.0)
     soc_min = float(storage_cfg.get("soc_min", 0.05) or 0.05)
@@ -1289,6 +1314,12 @@ def build_step15_power_series(
     # 窗口累计状态：charged/discharged（电网侧）
     window_state: Dict[tuple[str, str], dict] = {}
 
+    # SOC 跟踪（电池侧能量，非电网侧）
+    # 初始 SOC：默认为 soc_min（空电池状态），可由配置覆盖
+    initial_soc = float(storage_cfg.get("initial_soc") or soc_min)
+    current_soc = max(soc_min, min(soc_max, initial_soc))  # 限制在有效范围
+    usable_capacity = cap * (soc_max - soc_min) if cap > 0 else 0.0  # 可用容量
+
     records: List[dict] = []
     for ts, row in joined.iterrows():
         try:
@@ -1308,11 +1339,16 @@ def build_step15_power_series(
         win_key = _window_key(ts, op)
 
         # 电池侧功率：对电池为正充电，负为放电
+        # 重要：功率需要受到储能最大功率 p_max = c_rate * capacity 的限制
         p_batt = 0.0
         if op == OP_CHARGE:
-            p_batt = max(limit_kw - reserve_ch - load_kw, 0.0)
+            # 可用充电功率 = min(需量上限 - 预留 - 负荷, 储能最大功率)
+            p_batt_raw = max(limit_kw - reserve_ch - load_kw, 0.0)
+            p_batt = min(p_batt_raw, p_max) if p_max > 0 else p_batt_raw
         elif op == OP_DISCHARGE:
-            p_batt = -max(load_kw - reserve_dis, 0.0)
+            # 可用放电功率 = min(负荷 - 预留, 储能最大功率)
+            p_batt_raw = max(load_kw - reserve_dis, 0.0)
+            p_batt = -min(p_batt_raw, p_max) if p_max > 0 else -p_batt_raw
         else:
             p_batt = 0.0
 
@@ -1369,7 +1405,7 @@ def build_step15_power_series(
         if load_kw > 0:
             max_discharge = max(-p_grid_phys, -p_grid_sample, 0.0)
             if max_discharge > 0:
-                allowed_discharge = load_kw  # 最多只能把负荷削到 0
+                allowed_discharge = max(load_kw - reserve_dis, 0.0)  # 保持放电余量 reserve_dis
                 if max_discharge > allowed_discharge + 1e-6:
                     scale_dis = allowed_discharge / max_discharge if allowed_discharge > 0 else 0.0
                     if scale_dis < 0:
@@ -1445,6 +1481,16 @@ def build_step15_power_series(
             charge_target = None
             discharge_target = None
 
+        # 更新 SOC（基于电池侧能量，非电网侧）
+        # p_batt > 0 表示充电，< 0 表示放电
+        soc_before = current_soc
+        if cap > 0:
+            # 电池侧能量变化（kWh）
+            e_batt_change = p_batt * dt_hours  # 正=充电增加，负=放电减少
+            # SOC 变化
+            delta_soc = e_batt_change / cap if cap > 0 else 0.0
+            current_soc = max(soc_min, min(soc_max, current_soc + delta_soc))
+
         records.append(
             {
                 "timestamp": ts,
@@ -1455,7 +1501,9 @@ def build_step15_power_series(
                 "year_month": ts.strftime("%Y-%m"),
                 "op": op or OP_STANDBY,
                 "limit_kw": float(limit_kw) if limit_kw is not None else None,
+                "p_max_kw": p_max,  # 储能最大功率
                 "p_batt_kw": p_batt,
+                "soc": current_soc,  # 当前 SOC（时间点结束时的值）
                 "e_in_physics_kwh": e_in_phys,
                 "e_out_physics_kwh": e_out_phys,
                 "e_in_sample_kwh": e_in_sample,
@@ -1646,3 +1694,5 @@ def compute_profit_summary_step15(
         "months": months_result,
         "year": year_result,
     }
+
+
