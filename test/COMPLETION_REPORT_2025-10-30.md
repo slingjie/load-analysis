@@ -140,7 +140,7 @@
 ### 数据文件 (2份)
 ```
 ✅ backend_test_results.json      - 原始JSON报告
-✅ test_quality_comparison.py     - 可重复运行脚本
+✅ scripts/test_quality_comparison.py     - 可重复运行脚本
 ```
 
 ### 索引文件 (1份)
@@ -243,7 +243,7 @@
 完整验证 (15分钟):    FINAL_VERIFICATION_REPORT.md
 对比分析 (20分钟):    COMPARISON_REPORT.md
 详细数据 (JSON):      backend_test_results.json
-重复测试 (Python):    test_quality_comparison.py
+重复测试 (Python):    scripts/test_quality_comparison.py
 导航索引 (本页):      TEST_INDEX.md
 ```
 

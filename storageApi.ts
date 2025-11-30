@@ -86,6 +86,66 @@ export const computeStorageCycles = async (
   return result as BackendStorageCyclesResponse;
 };
 
+/**
+ * 按需导出储能次数测算的 Excel 报表。
+ *
+ * 与 computeStorageCycles 共用同一个后端接口，仅额外传递 export_excel=true，
+ * 让后端在已有计算逻辑基础上生成 Excel 文件并返回 excel_path。
+ * 说明：
+ * - 默认测算不导出 Excel，以降低每次测算的耗时；
+ * - 只有在用户点击“导出报表”时才调用本函数。
+ */
+export const exportStorageCyclesReport = async (
+  file: File | null,
+  payload: StorageParamsPayload,
+): Promise<BackendStorageCyclesResponse> => {
+  const formData = new FormData();
+  if (file) formData.append('file', file);
+  formData.append('payload', JSON.stringify(payload));
+  formData.append('export_excel', 'true');
+
+  const url = `${BASE_URL}/api/storage/cycles`;
+  console.debug('[storageApi] POST export cycles excel', url, { base: BASE_URL });
+
+  const response = await fetch(url, {
+    method: 'POST',
+    body: formData,
+  });
+
+  const contentType = response.headers.get('content-type') || '';
+  let result: any = null;
+  let rawText: string | null = null;
+  try {
+    if (contentType.includes('application/json')) {
+      result = await response.json().catch(() => null);
+    } else {
+      rawText = await response.text().catch(() => null);
+      try { result = rawText ? JSON.parse(rawText) : null; } catch { /* ignore */ }
+    }
+  } catch {
+    // ignore parse errors
+  }
+
+  if (!response.ok) {
+    const detail =
+      result?.detail ||
+      rawText ||
+      `${response.status} ${response.statusText}` ||
+      '储能次数报表导出失败，请稍后重试。';
+    console.error('[storageApi] exportStorageCyclesReport failed', {
+      url,
+      status: response.status,
+      statusText: response.statusText,
+      detail,
+      payload,
+      rawText,
+    });
+    throw new Error(detail);
+  }
+
+  return result as BackendStorageCyclesResponse;
+};
+
 // 带上传进度与取消能力的版本（主要针对开始测算按钮上传大文件时的交互优化）
 export const computeStorageCyclesWithProgress = (
   file: File | null,

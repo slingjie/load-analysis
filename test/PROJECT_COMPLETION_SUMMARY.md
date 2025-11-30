@@ -317,6 +317,6 @@ test/
 ├─ TEST_INDEX.md
 ├─ FINAL_SUMMARY.md
 ├─ backend_test_results.json
-└─ test_quality_comparison.py
+└─ scripts/test_quality_comparison.py
 ```
 

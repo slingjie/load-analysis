@@ -398,6 +398,7 @@ def _build_series_15m_from_payload(
 async def compute_storage_cycles(
     file: UploadFile | None = File(None),
     payload: str = Form(...),
+    export_excel: bool = Form(False),
 ) -> StorageCyclesResponse:
     """储能等效满充满放次数 + 收益 + 质量指标"""
 
@@ -662,62 +663,68 @@ async def compute_storage_cycles(
         len(window_month_summary),
     )
 
-    # 导出 Excel 报表（尽量不影响接口主流程）
-    from datetime import datetime as _dt  # noqa: WPS433
-    from pathlib import Path as _Path  # noqa: WPS433
+    # Excel 导出改为“按需触发”：仅当 export_excel=True 时才生成报表，
+    # 默认情况下不导出，以减少每次测算的耗时。
+    excel_rel: str | None = None
+    if export_excel:
+        from datetime import datetime as _dt  # noqa: WPS433
+        from pathlib import Path as _Path  # noqa: WPS433
 
-    ts_dir = _dt.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = _Path("outputs") / ts_dir
-    try:
-        # 生成逐 15 分钟功率 / 负荷序列，供导出调试
+        ts_dir = _dt.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = _Path("outputs") / ts_dir
         try:
-            step15_df = cycles_svc.build_step15_power_series(
-                series_15m,
-                daily_ops=daily_ops,
+            # 生成逐 15 分钟功率 / 负荷序列，供导出调试
+            try:
+                step15_df = cycles_svc.build_step15_power_series(
+                    series_15m,
+                    daily_ops=daily_ops,
+                    limit_info=limit_info,
+                    storage_cfg=storage_cfg,
+                    price_series=price_series,
+                    window_debug=window_debug,
+                    energy_formula=energy_formula,
+                )
+            except Exception as exc:  # pragma: no cover - 调试容错
+                logger.exception(
+                    "build_step15_power_series failed during export: %s",
+                    exc,
+                )
+                step15_df = pd.DataFrame()
+
+            ops_rows: List[Dict[str, Any]] = []
+            for dkey, ops in sorted(daily_ops.items(), key=lambda kv: kv[0]):
+                row = {"date": dkey}
+                for h in range(24):
+                    keyh = f"h{h:02d}"
+                    row[keyh] = ops[h] if h < len(ops) else None
+                ops_rows.append(row)
+
+            xlsx_path, summary_csv_path = cycles_svc.export_excel_report(
+                out_dir,
+                source_filename=filename or "points_payload",
+                days=[d.model_dump() for d in days],
+                months=[{"year_month": m.year_month, "cycles": m.cycles} for m in months],
+                year={"year": year_summary.year, "cycles": year_summary.cycles},
+                monthly_prices=monthly_prices if isinstance(monthly_prices, list) else None,
                 limit_info=limit_info,
-                storage_cfg=storage_cfg,
-                price_series=price_series,
+                qc_dict=qc.model_dump(),
                 window_debug=window_debug,
+                ops_by_hour=ops_rows,
+                runs_debug=runs_debug,
+                profit_summary=profit_summary,
+                step15_df=step15_df,
                 energy_formula=energy_formula,
             )
-        except Exception as exc:  # pragma: no cover - 调试容错
-            logger.exception("build_step15_power_series failed during export: %s", exc)
-            step15_df = pd.DataFrame()
-
-        ops_rows: List[Dict[str, Any]] = []
-        for dkey, ops in sorted(daily_ops.items(), key=lambda kv: kv[0]):
-            row = {"date": dkey}
-            for h in range(24):
-                keyh = f"h{h:02d}"
-                row[keyh] = ops[h] if h < len(ops) else None
-            ops_rows.append(row)
-
-        xlsx_path, summary_csv_path = cycles_svc.export_excel_report(
-            out_dir,
-            source_filename=filename or "points_payload",
-            days=[d.model_dump() for d in days],
-            months=[{"year_month": m.year_month, "cycles": m.cycles} for m in months],
-            year={"year": year_summary.year, "cycles": year_summary.cycles},
-            monthly_prices=monthly_prices if isinstance(monthly_prices, list) else None,
-            limit_info=limit_info,
-            qc_dict=qc.model_dump(),
-            window_debug=window_debug,
-            ops_by_hour=ops_rows,
-            runs_debug=runs_debug,
-            profit_summary=profit_summary,
-            step15_df=step15_df,
-            energy_formula=energy_formula,
-        )
-        excel_rel = str(xlsx_path.as_posix())
-        if summary_csv_path:
-            try:
-                qc.notes.append(f"summary csv: {summary_csv_path.as_posix()}")
-            except Exception:
-                pass
-    except Exception as exc:  # pragma: no cover
-        logger.exception("export excel failed: %s", exc)
-        excel_rel = None
-        qc.notes.append("export excel failed: " + str(exc))
+            excel_rel = str(xlsx_path.as_posix())
+            if summary_csv_path:
+                try:
+                    qc.notes.append(f"summary csv: {summary_csv_path.as_posix()}")
+                except Exception:
+                    pass
+        except Exception as exc:  # pragma: no cover
+            logger.exception("export excel failed: %s", exc)
+            excel_rel = None
+            qc.notes.append("export excel failed: " + str(exc))
 
     return StorageCyclesResponse(
         year=year_summary,

@@ -52,7 +52,7 @@
 
 | 文件 | 内容 | 用途 | 优先级 |
 |------|------|------|--------|
-| **test_quality_comparison.py** | Python脚本 | 可重复运行的测试 | 🟢 中 |
+| **scripts/test_quality_comparison.py** | Python脚本 | 可重复运行的测试 | 🟢 中 |
 
 ### 参考文件 (1个)
 
@@ -104,7 +104,7 @@
 📄 查看:
   1. FINAL_VERIFICATION_REPORT.md (技术部分)
   2. backend_test_results.json (原始数据)
-  3. test_quality_comparison.py (测试代码)
+  3. scripts/test_quality_comparison.py (测试代码)
 ✓ 了解: 实现细节和可重复验证
 ⏱️ 时间: 30分钟
 ```
@@ -216,7 +216,7 @@
 ├─ COMPARISON_REPORT.md              (15分钟对比分析)
 ├─ DETAILED_COMPARISON.md            (10分钟详细对比)
 ├─ backend_test_results.json         (原始数据)
-├─ test_quality_comparison.py        (测试脚本)
+├─ scripts/test_quality_comparison.py        (测试脚本)
 ├─ TEST_INDEX.md                     (这个文件 - 导航用)
 └─ 测试报告-数据清洗功能.md          (旧报告 - 对比用)
 ```

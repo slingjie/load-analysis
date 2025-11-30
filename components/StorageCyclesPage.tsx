@@ -16,6 +16,7 @@ import {
   computeStorageCyclesWithProgress,
   analyzeDataForCleaning,
   applyDataCleaning,
+  exportStorageCyclesReport,
   type StorageParamsPayload,
 } from '../storageApi';
 import UploadProgressRing from './UploadProgressRing';
@@ -137,6 +138,9 @@ export const StorageCyclesPage: React.FC<Props> = ({
     bestYearEqCycles: number;
   } | null>(null);
   const didAutoApplyDefaultRef = useRef(false);
+  // 最近一次完整测算的参数与文件，用于按需导出 Excel 报表
+  const lastPayloadRef = useRef<StorageParamsPayload | null>(null);
+  const lastFileRef = useRef<File | null>(null);
 
   // ================== 数据清洗相关状态 ==================
   // 是否启用清洗流程（用户可关闭）
@@ -717,6 +721,9 @@ export const StorageCyclesPage: React.FC<Props> = ({
       setLoading(true);
       // 如果有清洗后的数据，不需要上传文件
       const shouldUploadFile = file && !cleanedPoints;
+      // 记录最近一次测算所使用的参数与文件，供后续“导出报表”复用
+      lastPayloadRef.current = payload;
+      lastFileRef.current = shouldUploadFile ? file : null;
       setCyclePhase(shouldUploadFile ? 'uploading' : 'computing');
       setCycleProgressPct(0);
       setShowCycleRing(true);
@@ -1102,6 +1109,9 @@ export const StorageCyclesPage: React.FC<Props> = ({
           monthlyTouPrices: scheduleData.prices,
           points: pointsPayload,
         };
+        // 反推容量场景也更新最近一次测算参数，便于后续导出报表
+        lastPayloadRef.current = payload;
+        lastFileRef.current = file;
         finalResp = await computeStorageCycles(file, payload);
       }
 
@@ -1116,6 +1126,37 @@ export const StorageCyclesPage: React.FC<Props> = ({
     } catch (err: any) {
       setError(err?.message || '按目标全年等效循环数反推容量失败');
     } finally {
+      setLoading(false);
+    }
+  };
+
+  // 按需导出 Excel 报表：复用最近一次测算的 payload 与文件，仅在用户点击时触发后端导出
+  const handleExportExcel = async () => {
+    if (!result) {
+      setError('请先完成一次储能次数测算，再导出 Excel 报表。');
+      return;
+    }
+    const payload = lastPayloadRef.current;
+    const file = lastFileRef.current;
+    if (!payload) {
+      setError('未找到最近一次测算参数，请重新测算后再导出报表。');
+      return;
+    }
+    try {
+      setLoading(true);
+      setProgressStep('正在导出 Excel 报表...');
+      const resp = await exportStorageCyclesReport(file ?? null, payload);
+      // 导出报表不影响当前主结果，仅用于获取 excel_path
+      if (resp.excel_path) {
+        // 直接在新窗口打开导出结果，保持体验与原先“点击链接下载”一致
+        window.open(resp.excel_path, '_blank', 'noopener,noreferrer');
+      } else {
+        setError('后端未返回报表下载地址，请稍后重试。');
+      }
+    } catch (e: any) {
+      setError(e?.message || '导出 Excel 报表失败，请稍后重试。');
+    } finally {
+      setProgressStep('');
       setLoading(false);
     }
   };
@@ -2589,17 +2630,17 @@ export const StorageCyclesPage: React.FC<Props> = ({
             </div>
           </div>
 
-          {result.excel_path && (
-            <div className="p-3 border rounded bg-white text-sm">
-              报表：
-              <a
-                href={result.excel_path}
-                className="text-blue-600 underline"
-                target="_blank"
-                rel="noreferrer"
+          {result && (
+            <div className="p-3 border rounded bg-white text-sm flex items-center justify-between gap-3">
+              <div className="text-slate-700">报表导出：</div>
+              <button
+                type="button"
+                onClick={handleExportExcel}
+                className="px-3 py-1.5 rounded bg-emerald-600 text-white text-xs md:text-sm hover:bg-emerald-700 disabled:opacity-60"
+                disabled={loading}
               >
-                下载 Excel 详细结果
-              </a>
+                导出 Excel 详细结果
+              </button>
             </div>
           )}
 

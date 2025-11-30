@@ -12,7 +12,7 @@
 
 一个专业的电力负荷数据可视化分析与储能系统定容测算平台
 
-[功能特性](#-功能特性) • [快速开始](#-快速开始) • [项目结构](#-项目结构) • [API 文档](#-api-文档) • [开发指南](#-开发指南)
+[功能特性](#-功能特性) • [快速开始](#-快速开始) • [界面预览](#-界面预览) • [项目结构](#-项目结构) • [API 文档](#-api-文档) • [开发指南](#-开发指南)
 
 </div>
 
@@ -28,7 +28,7 @@
 - 🔋 **储能定容测算** - 基于负荷数据自动计算储能容量、充放电次数、经济效益
 - 💰 **电价管理** - 灵活配置分时电价、峰谷平时段，支持多种电价策略
 - 📈 **数据清洗分析** - 自动识别异常数据、缺失值处理、数据质量评估
-- 📄 **报告生成** - 一键导出专业分析报告，支持 Excel、PDF 格式
+- 📄 **报告生成** - 支持导出 Excel 报表，并可通过浏览器导出/打印 PDF 报告
 
 ---
 
@@ -125,6 +125,32 @@ start-services.bat
 
 ---
 
+## 🖼️ 界面预览
+
+> 提示：本节仅预留截图位置，后续可直接在对应小节下方粘贴 Markdown 图片链接，例如：`![](docs/images/storage-cycles.png)`。
+
+### 1. 首页 / 导航总览
+
+_![alt text](image.png)_
+
+### 2. 负荷分析（Load Analysis）
+
+_![alt text](image-1.png)_
+
+### 3. 储能充放次数测算（Storage Cycles）
+
+_![alt text](image-2.png)_
+
+### 4. 储能收益与负荷对比（Storage Profit）
+
+_![alt text](image-3.png)_
+
+### 5. 储能经济性测算（Storage Economics）
+
+_![alt text](image-4.png)_
+
+---
+
 ## 📁 项目结构
 
 ```
@@ -134,9 +160,11 @@ load-analysis/
 │   ├── requirements.txt       # Python 依赖
 │   └── ...                    # 业务逻辑模块
 ├── 📂 components/             # React 组件
-│   ├── LoadAnalysis.tsx      # 负荷分析组件
-│   ├── StorageCalculator.tsx # 储能测算组件
-│   └── ...                    # 其他组件
+│   ├── LoadAnalysisPage.tsx      # 负荷分析页面
+│   ├── StorageCyclesPage.tsx     # 储能充放次数测算页面
+│   ├── StorageEconomicsPage.tsx  # 储能经济性测算页面
+│   ├── StorageProfitPage.tsx     # 储能收益与负荷对比页面
+│   └── ...                       # 其他通用组件
 ├── 📂 hooks/                  # React Hooks
 ├── 📂 test/                   # 测试文件
 ├── 📂 负荷测试数据/           # 测试用负荷数据
@@ -162,11 +190,10 @@ load-analysis/
 
 | 技术 | 用途 |
 |------|------|
-| **React 18** | UI 框架 |
+| **React 19** | UI 框架 |
 | **TypeScript** | 类型安全 |
 | **Vite** | 构建工具 |
-| **ECharts** | 数据可视化 |
-| **Ant Design** | UI 组件库 |
+| **Chart.js / ECharts** | 数据可视化 |
 
 ### 后端技术
 
@@ -233,10 +260,9 @@ load-analysis/
   - 负荷特性分析报告
   - 储能测算结果报告
   - 经济效益评估报告
-- **图表导出**：
-  - 高清图表导出
-  - Excel 数据表格
-  - PDF 综合报告
+- **图表 / 数据导出**：
+  - Excel 数据表格：储能充放次数与收益的详细结果，可在 **Storage Cycles** 页面完成测算后点击“导出 Excel 详细结果”按钮按需生成，对应后端 `/api/storage/cycles` 的按需导出能力。
+  - PDF 报告：当前通过浏览器打印 / 另存为方式从页面导出，后续可按需求接入专用 PDF 导出组件。
 
 ### 5. 🤖 AI 项目评估报告
 
@@ -265,9 +291,12 @@ load-analysis/
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/api/load/analyze` | POST | 负荷数据分析 |
-| `/api/storage/calculate` | POST | 储能容量测算 |
-| `/api/price/configure` | POST | 电价配置 |
+| `/api/load/analyze` | POST | 负荷数据分析，返回质量报告与清洗前点列 |
+| `/api/cleaning/analyze` | POST | 数据清洗分析（零值 / 负值 / 空值诊断） |
+| `/api/cleaning/apply` | POST | 应用清洗配置并返回清洗后的点列 |
+| `/api/storage/cycles` | POST | 储能充放次数 + 收益 + QC；支持按需导出 Excel 报表 |
+| `/api/storage/cycles/curves` | POST | 单日“储能前后”负荷与收益对比曲线 |
+| `/api/storage/economics` | POST | 储能项目经济性测算（IRR / 静态回收期等） |
 | `/api/deepseek/project-summary` | POST | 生成项目评估报告（AI） |
 | `/health` | GET | 服务健康检查 |
 
@@ -283,13 +312,13 @@ load-analysis/
 
 项目包含详细的开发文档和需求说明：
 
-- 📖 [完整的负荷可视化需求 1.0](0.0完整的负荷可视化需求1.0.md)
-- 🧹 [数据清洗需求](0.1数据清洗需求.md)
-- 💡 [电价编辑和展示功能](0.2电价编辑和展示功能.md)
-- 🧭 [界面目录导航方式选择](0.3界面目录导航方式选择.md)
-- 🔋 [储能充放次数测算需求](1.1新需求储能充放次数测算.md)
-- 📝 [储能次数计算待办](储能次数计算待办.md)
-- 💬 [沟通记录](沟通记录.md)
+- 📖 [完整的负荷可视化需求 1.0](docs/0.0完整的负荷可视化需求1.0.md)
+- 🧹 [数据清洗需求](docs/0.1数据清洗需求.md)
+- 💡 [电价编辑和展示功能](docs/0.2电价编辑和展示功能.md)
+- 🧭 [界面目录导航方式选择](docs/0.3界面目录导航方式选择.md)
+- 🔋 [储能充放次数测算需求](docs/1.1新需求储能充放次数测算.md)
+- 📝 [储能次数计算待办](docs/储能次数计算待办.md)
+- 💬 [沟通记录](docs/沟通记录.md)
 
 ---
 

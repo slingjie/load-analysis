@@ -69,7 +69,7 @@ test/
 ├─ COMPARISON_REPORT.md          ← 对比分析
 ├─ DETAILED_COMPARISON.md        ← 详细对比表
 ├─ backend_test_results.json     ← 原始JSON数据
-└─ test_quality_comparison.py    ← 测试脚本
+└─ scripts/test_quality_comparison.py    ← 测试脚本
 ```
 
 ---

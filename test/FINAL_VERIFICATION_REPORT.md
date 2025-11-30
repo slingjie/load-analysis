@@ -217,5 +217,5 @@
 - ✅ `backend_test_results.json` - 完整的后端测试输出
 - ✅ `COMPARISON_REPORT.md` - 详细对比分析
 - ✅ `DETAILED_COMPARISON.md` - 逐项详细对比
-- ✅ `test_quality_comparison.py` - 测试脚本
+- ✅ `scripts/test_quality_comparison.py` - 测试脚本
 

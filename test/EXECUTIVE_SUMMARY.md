@@ -337,7 +337,7 @@ dates = df['日期'].unique()
 | `FINAL_VERIFICATION_REPORT.md` | 最终验证报告 |
 | `COMPARISON_REPORT.md` | 对比分析报告 |
 | `DETAILED_COMPARISON.md` | 详细对比表格 |
-| `test_quality_comparison.py` | 测试脚本 |
+| `scripts/test_quality_comparison.py` | 测试脚本 |
 
 ---
 

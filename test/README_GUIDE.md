@@ -37,7 +37,7 @@
 ```
 👉 查看文件:
    1. backend_test_results.json (JSON数据)
-   2. test_quality_comparison.py (Python脚本)
+  2. test_quality_comparison.py (Python脚本，位于 scripts 目录)
    3. FINAL_VERIFICATION_REPORT.md (技术部分)
 📌 核心内容: 原始数据 + 可重复执行代码
 ⏱️ 时间: 30分钟
@@ -68,7 +68,7 @@
 | 文件 | 内容 | 用途 |
 |------|------|------|
 | **backend_test_results.json** | JSON格式数据 | 机器可读的完整数据 |
-| **test_quality_comparison.py** | Python脚本 | 可重复执行的测试 |
+| **test_quality_comparison.py** | Python脚本（`scripts/`） | 可重复执行的测试 |
 
 ### 导航文件 (2份)
 
@@ -249,7 +249,7 @@
 - 📈 **数据对比** → [COMPARISON_REPORT.md](./COMPARISON_REPORT.md)
 - 📋 **详细表格** → [DETAILED_COMPARISON.md](./DETAILED_COMPARISON.md)
 - 💾 **原始数据** → [backend_test_results.json](./backend_test_results.json)
-- 💻 **测试脚本** → [test_quality_comparison.py](./test_quality_comparison.py)
+- 💻 **测试脚本** → `scripts/test_quality_comparison.py`
 - 🗺️ **完整导航** → [TEST_INDEX.md](./TEST_INDEX.md)
 
 ---
@@ -282,7 +282,7 @@ A: 需要:
 ### Q: "如何重复这个测试?"
 A: 使用提供的Python脚本
 ```bash
-python test_quality_comparison.py
+python ../scripts/test_quality_comparison.py
 ```
 
 ---

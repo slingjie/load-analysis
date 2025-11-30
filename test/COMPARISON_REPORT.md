@@ -241,5 +241,5 @@
 
 - 完整后端测试结果: `backend_test_results.json`
 - 旧测试报告: `测试报告-数据清洗功能.md`
-- 新测试脚本: `test_quality_comparison.py`
+- 新测试脚本: `scripts/test_quality_comparison.py`
 

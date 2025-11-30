@@ -258,7 +258,7 @@ df = df.dropna(subset=["timestamp"])  # 丢弃NaN时间戳
 ```bash
 # 运行完整的后端测试验证
 cd 工作目录
-python test_quality_comparison.py
+python ../scripts/test_quality_comparison.py
 ```
 
 ### 4. 更新文档
