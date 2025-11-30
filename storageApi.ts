@@ -5,9 +5,11 @@ import type {
   CleaningAnalysisResponse,
   CleaningConfigRequest,
   CleaningResultResponse,
+  StorageEconomicsInput,
+  StorageEconomicsResult,
 } from './types';
 
-const BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || '').replace(/\/$/, '');
+const BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || '').replace(/\/$/, '') || 'http://localhost:8002';
 
 export interface StorageParamsPayload {
   storage: {
@@ -294,4 +296,45 @@ export const applyDataCleaning = async (
   }
 
   return result as CleaningResultResponse;
+};
+
+// ===================== 储能经济性测算 API =====================
+
+/**
+ * 计算储能项目经济性指标（IRR、静态回收期、年度现金流）
+ * @param input - 经济性测算输入参数
+ */
+export const computeStorageEconomics = async (
+  input: StorageEconomicsInput,
+): Promise<StorageEconomicsResult> => {
+  const url = `${BASE_URL}/api/storage/economics`;
+  console.debug('[storageApi] POST storage/economics', url, input);
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+
+  const contentType = response.headers.get('content-type') || '';
+  let result: any = null;
+  let rawText: string | null = null;
+  try {
+    if (contentType.includes('application/json')) {
+      result = await response.json().catch(() => null);
+    } else {
+      rawText = await response.text().catch(() => null);
+      try { result = rawText ? JSON.parse(rawText) : null; } catch { /* ignore */ }
+    }
+  } catch (e) {
+    // ignore parse errors
+  }
+
+  if (!response.ok) {
+    const detail = result?.detail || rawText || `${response.status} ${response.statusText}` || '经济性测算失败';
+    console.error('[storageApi] computeStorageEconomics failed', { url, status: response.status, detail, input });
+    throw new Error(detail);
+  }
+
+  return result as StorageEconomicsResult;
 };

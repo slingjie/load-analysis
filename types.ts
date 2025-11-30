@@ -340,3 +340,51 @@ export interface ComparisonResult {
     negative_points_modified: number;
   };
 }
+
+// ==================== 储能经济性测算相关类型 ====================
+
+// 经济性测算输入参数
+export interface StorageEconomicsInput {
+  first_year_revenue: number;         // 首年收益（已扣电费、未扣运维），单位：元
+  first_year_energy_kwh?: number | null;  // 首年发电能量（来自 Storage Cycles），单位：kWh。用于精确计算静态 LCOE 和度电收益
+  project_years: number;              // 项目年限，默认 15 年
+  annual_om_cost: number;             // 年运维成本单位成本，单位：元/Wh。实际成本 = annual_om_cost × 容量(kWh) ÷ 10（万元）
+  first_year_decay_rate: number;      // 首年衰减率（0–1），如 0.03 表示 3%
+  subsequent_decay_rate: number;      // 次年至末年衰减率（0–1），如 0.015 表示 1.5%
+  capex_per_wh: number;               // 单 Wh 投资，单位：元/Wh
+  installed_capacity_kwh: number;     // 储能装机容量，单位：kWh
+  cell_replacement_cost?: number | null;    // 电芯更换成本单位成本（可选），单位：元/Wh。实际成本 = cell_replacement_cost × 容量(kWh) ÷ 10（万元）
+  cell_replacement_year?: number | null;    // 电芯更换年份（可选），第 N 年
+  second_phase_first_year_revenue?: number | null; // 更换后新的首年收益（可选）
+}
+
+// 年度现金流单条记录
+export interface YearlyCashflowItem {
+  year_index: number;                 // 第几年度，1..N
+  year_revenue: number;               // 年度收益（已扣电费、按衰减计算）
+  annual_om_cost: number;             // 当年运维成本
+  cell_replacement_cost: number;      // 当年电芯更换成本（无则为 0）
+  net_cashflow: number;               // 年度净现金流
+  cumulative_net_cashflow: number;    // 累计净现金流
+}
+
+// 静态经济性评估指标（第一步：快速筛选）
+export interface StaticEconomicsMetrics {
+  static_lcoe: number;                // 静态平均度电成本，单位：元/kWh
+  annual_energy_kwh: number;          // 年均发电能量，单位：kWh
+  annual_revenue_yuan: number;        // 年均收益，单位：元
+  revenue_per_kwh: number;            // 度电平均收益，单位：元/kWh
+  lcoe_ratio: number;                 // 经济可行性比值（≥1.5 为绿灯）
+  pass_threshold?: number;            // 快速筛选通过阈值，默认 1.5
+  screening_result: string;           // 筛选结论：'pass' 或 'fail'
+}
+
+// 经济性测算结果
+export interface StorageEconomicsResult {
+  capex_total: number;                        // 总投资 CAPEX（元）
+  irr: number | null;                         // 内部收益率（0–1），无法收敛则为 null
+  static_payback_years: number | null;        // 静态回收期（年），项目周期内无法回本则为 null
+  final_cumulative_net_cashflow: number;      // 项目期末累计净现金流
+  yearly_cashflows: YearlyCashflowItem[];     // 年度现金流序列
+  static_metrics?: StaticEconomicsMetrics | null; // 静态经济性评估指标（第一步筛选）
+}

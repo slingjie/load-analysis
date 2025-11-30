@@ -23,6 +23,7 @@ import { EnergyMatrixPage } from './components/EnergyMatrixPage';
 import { QualityReportPage } from './components/QualityReportPage';
 import { StorageCyclesPage } from './components/StorageCyclesPage';
 import { StorageProfitPage } from './components/StorageProfitPage';
+import { StorageEconomicsPage } from './components/StorageEconomicsPage';
 import { PriceEditorPage } from './components/PriceEditorPage';
 import { ProjectSummaryPage } from './components/ProjectSummaryPage';
 import { FloatingSectionNav, type SectionItem } from './components/FloatingSectionNav';
@@ -64,7 +65,7 @@ const EditModeSelector: React.FC<{
 
 const App: React.FC = () => {
   // --- Page State ---
-  const [currentPage, setCurrentPage] = useState<'editor' | 'price' | 'analysis' | 'matrix' | 'quality' | 'storage' | 'profit' | 'summary'>('editor');
+  const [currentPage, setCurrentPage] = useState<'editor' | 'price' | 'analysis' | 'matrix' | 'quality' | 'storage' | 'profit' | 'economics' | 'summary'>('editor');
   const [profitSelectedDate, setProfitSelectedDate] = useState<string | null>(null);
   const [lastStorageRun, setLastStorageRun] = useState<{
     payload: StorageParamsPayload;
@@ -157,6 +158,14 @@ const App: React.FC = () => {
           { id: 'section-profit-selector', title: '日期选择' },
           { id: 'section-profit-curves', title: '曲线对比' },
           { id: 'section-profit-metrics', title: '指标对比' },
+        ];
+      case 'economics':
+        return [
+          { id: 'section-economics-form', title: '参数配置' },
+          { id: 'section-economics-kpi', title: '核心指标' },
+          { id: 'section-economics-chart', title: '现金流图表' },
+          { id: 'section-economics-table', title: '年度明细' },
+          { id: 'section-economics-conclusion', title: '投资评估' },
         ];
       default:
         return [];
@@ -798,6 +807,13 @@ const App: React.FC = () => {
                 Storage Profit
               </button>
               <button 
+                onClick={() => setCurrentPage('economics')} 
+                className={`${navButtonBaseClasses} ${currentPage === 'economics' ? navButtonActiveClasses : navButtonInactiveClasses}`}
+                aria-current={currentPage === 'economics' ? 'page' : undefined}
+              >
+                Economics
+              </button>
+              <button 
                 onClick={() => setCurrentPage('summary')} 
                 className={`${navButtonBaseClasses} ${currentPage === 'summary' ? navButtonActiveClasses : navButtonInactiveClasses}`}
                 aria-current={currentPage === 'summary' ? 'page' : undefined}
@@ -1086,6 +1102,14 @@ const App: React.FC = () => {
           onLatestRunChange={(payload, response) => {
             setLastStorageRun({ payload, response });
           }}
+        />
+      </div>
+      {/* Economics 页面保持挂载，避免切换时状态重置 */}
+      <div className={currentPage === 'economics' ? '' : 'hidden'}>
+        <StorageEconomicsPage
+          externalFirstYearRevenue={lastStorageRun?.response?.year?.profit?.main?.profit ?? null}
+          externalCapacityKwh={lastStorageRun?.payload?.storage?.capacity_kwh ?? null}
+          externalFirstYearEnergyKwh={lastStorageRun?.response?.year?.profit?.main?.discharge_energy_kwh ?? null}
         />
       </div>
 

@@ -9,7 +9,7 @@ import pandas as pd
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from .schemas import (
+from schemas import (
     CleanedPoint,
     CleaningAnalysisResponse,
     CleaningConfigRequest,
@@ -35,10 +35,15 @@ from .schemas import (
     StorageQC,
     StorageWindowMonthSummary,
     ZeroSpanDetail,
+    StorageEconomicsInput,
+    StorageEconomicsResult,
+    StaticEconomicsMetrics,
+    YearlyCashflowItem,
 )
-from .services import loader, quality
-from .services import cycles as cycles_svc
-from .services import cleaning as cleaning_svc
+from services import loader, quality
+from services import cycles as cycles_svc
+from services import cleaning as cleaning_svc
+from services import economics as economics_svc
 
 
 logger = logging.getLogger("load-analysis")
@@ -962,7 +967,7 @@ async def generate_project_summary_endpoint(
     前端传入项目基本信息与各模块可选数据，后端调用 DeepSeek API 生成 Markdown 报告。
     """
     from datetime import datetime, timezone
-    from .services.deepseek_summary import generate_project_summary, DeepSeekError
+    from services.deepseek_summary import generate_project_summary, DeepSeekError
     
     # 构建项目信息
     project_info = {
@@ -1015,4 +1020,111 @@ async def generate_project_summary_endpoint(
         generated_at=datetime.now(timezone.utc).isoformat(),
         markdown=markdown_report,
         summary=summary_dict,
+    )
+
+
+@app.post("/api/storage/economics", response_model=StorageEconomicsResult)
+async def compute_storage_economics(
+    request: StorageEconomicsInput,
+) -> StorageEconomicsResult:
+    """
+    储能经济性测算接口。
+    
+    基于首年收益、项目年限、运维成本、衰减率、投资成本等参数，
+    计算 IRR、静态回收期和年度现金流序列。
+    
+    请求体字段说明：
+    - first_year_revenue: 首年收益（已扣电费、未扣运维），单位：元
+    - project_years: 项目年限，默认 15 年
+    - annual_om_cost: 年运维成本单位成本，单位：元/Wh。实际年运维成本 = annual_om_cost × 容量(kWh) ÷ 10（万元）
+    - first_year_decay_rate: 首年衰减率（0–1），默认 0.03（3%）
+    - subsequent_decay_rate: 次年至末年衰减率（0–1），默认 0.015（1.5%）
+    - capex_per_wh: 单 Wh 投资，单位：元/Wh
+    - installed_capacity_kwh: 储能装机容量，单位：kWh
+    - cell_replacement_cost: 电芯更换成本单位成本（可选），单位：元/Wh。实际成本 = cell_replacement_cost × 容量(kWh) ÷ 10（万元）
+    - cell_replacement_year: 电芯更换年份（可选），第 N 年
+    - second_phase_first_year_revenue: 更换后新的首年收益（可选）
+    
+    返回：
+    - capex_total: 总投资 CAPEX（元）
+    - irr: 内部收益率（0–1），如 0.12 表示 12%
+    - static_payback_years: 静态回收期（年）
+    - final_cumulative_net_cashflow: 项目期末累计净现金流
+    - yearly_cashflows: 年度现金流序列
+    """
+    logger.info(
+        "[economics API] received: first_year_revenue=%s, project_years=%s, capacity=%s kWh, capex_per_wh=%s",
+        request.first_year_revenue,
+        request.project_years,
+        request.installed_capacity_kwh,
+        request.capex_per_wh,
+    )
+    
+    try:
+        # 将单位成本（元/Wh）转换为实际年成本（万元）：成本 = 单位成本 × 容量(kWh) ÷ 10
+        actual_annual_om_cost = (request.annual_om_cost * request.installed_capacity_kwh) / 10
+        actual_cell_replacement_cost = None
+        if request.cell_replacement_cost is not None:
+            actual_cell_replacement_cost = (request.cell_replacement_cost * request.installed_capacity_kwh) / 10
+        
+        result = economics_svc.compute_economics(
+            first_year_revenue=request.first_year_revenue,
+            project_years=request.project_years,
+            annual_om_cost=actual_annual_om_cost,
+            first_year_decay_rate=request.first_year_decay_rate,
+            subsequent_decay_rate=request.subsequent_decay_rate,
+            capex_per_wh=request.capex_per_wh,
+            installed_capacity_kwh=request.installed_capacity_kwh,
+            first_year_energy_kwh=request.first_year_energy_kwh,
+            cell_replacement_year=request.cell_replacement_year,
+            cell_replacement_cost=actual_cell_replacement_cost,
+            second_phase_first_year_revenue=request.second_phase_first_year_revenue,
+        )
+    except Exception as exc:
+        logger.exception("economics compute failed")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"经济性计算失败: {str(exc)}",
+        ) from exc
+    
+    # 转换为响应模型
+    yearly_cashflows = [
+        YearlyCashflowItem(
+            year_index=cf.year_index,
+            year_revenue=cf.year_revenue,
+            annual_om_cost=cf.annual_om_cost,
+            cell_replacement_cost=cf.cell_replacement_cost,
+            net_cashflow=cf.net_cashflow,
+            cumulative_net_cashflow=cf.cumulative_net_cashflow,
+        )
+        for cf in result.yearly_cashflows
+    ]
+    
+    logger.info(
+        "[economics API] result: capex=%s, irr=%s, payback=%s years, lcoe_ratio=%s",
+        result.capex_total,
+        result.irr,
+        result.static_payback_years,
+        result.lcoe_ratio,
+    )
+    
+    # 构建静态指标对象（如果有）
+    static_metrics = None
+    if result.static_lcoe is not None:
+        static_metrics = StaticEconomicsMetrics(
+            static_lcoe=result.static_lcoe,
+            annual_energy_kwh=result.annual_energy_kwh,
+            annual_revenue_yuan=result.annual_revenue_yuan,
+            revenue_per_kwh=result.revenue_per_kwh,
+            lcoe_ratio=result.lcoe_ratio,
+            screening_result=result.screening_result,
+        )
+    
+    return StorageEconomicsResult(
+        capex_total=result.capex_total,
+        irr=result.irr,
+        static_payback_years=result.static_payback_years,
+        final_cumulative_net_cashflow=result.final_cumulative_net_cashflow,
+        yearly_cashflows=yearly_cashflows,
+        static_metrics=static_metrics,
     )

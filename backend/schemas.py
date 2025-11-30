@@ -405,3 +405,134 @@ class ProjectSummaryResponse(BaseModel):
         description="关键摘要信息（首年收益、循环次数、利用小时等）",
     )
 
+
+# =========================
+# 储能经济性测算模型
+# =========================
+
+
+class StorageEconomicsInput(BaseModel):
+    """储能经济性测算输入参数"""
+
+    first_year_revenue: float = Field(
+        description="首年收益 R₁（已扣电费、未扣运维），单位：元"
+    )
+    first_year_energy_kwh: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="首年发电能量（来自 Storage Cycles），单位：kWh。若提供，将用于精确计算静态经济性指标（LCOE、度电收益）；否则将基于收益反算",
+    )
+    project_years: int = Field(
+        default=15,
+        ge=1,
+        le=30,
+        description="项目年限，范围 1–30 年",
+    )
+    annual_om_cost: float = Field(
+        default=0.0,
+        ge=0,
+        description="年运维成本单位成本，单位：元/Wh。实际年运维成本 = annual_om_cost × 储能容量(kWh) ÷ 10（万元）",
+    )
+    first_year_decay_rate: float = Field(
+        default=0.03,
+        ge=0,
+        le=1,
+        description="首年衰减率，0–1 之间（如 0.03 表示 3%）",
+    )
+    subsequent_decay_rate: float = Field(
+        default=0.015,
+        ge=0,
+        le=1,
+        description="次年至末年衰减率，0–1 之间（如 0.015 表示 1.5%）",
+    )
+    capex_per_wh: float = Field(
+        gt=0,
+        description="单 Wh 投资，单位：元/Wh",
+    )
+    installed_capacity_kwh: float = Field(
+        gt=0,
+        description="储能装机容量，单位：kWh",
+    )
+    cell_replacement_cost: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="更换电芯成本单位成本（可选），单位：元/Wh。实际成本 = cell_replacement_cost × 储能容量(kWh) ÷ 10（万元）",
+    )
+    cell_replacement_year: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="电芯更换年份（可选），第 N 年",
+    )
+    second_phase_first_year_revenue: Optional[float] = Field(
+        default=None,
+        description="更换电芯后新的首年收益 R′₁（可选），默认与 R₁ 相同",
+    )
+
+
+class YearlyCashflowItem(BaseModel):
+    """年度现金流单条记录"""
+
+    year_index: int = Field(description="第几年度，1..N")
+    year_revenue: float = Field(description="年度收益（已扣电费、按衰减计算）")
+    annual_om_cost: float = Field(description="当年运维成本")
+    cell_replacement_cost: float = Field(
+        default=0.0,
+        description="当年电芯更换成本（无则为 0）",
+    )
+    net_cashflow: float = Field(
+        description="年度净现金流 = 年收益 - 运维 - 更换成本"
+    )
+    cumulative_net_cashflow: float = Field(description="累计净现金流")
+
+
+class StaticEconomicsMetrics(BaseModel):
+    """静态经济性评估指标（第一步：快速筛选）"""
+
+    static_lcoe: float = Field(
+        description="静态平均度电成本，单位：元/kWh（LCOE = CAPEX / (年均收益能量 × 项目年限)）"
+    )
+    annual_energy_kwh: float = Field(
+        description="年均发电能量（扣衰减后），单位：kWh"
+    )
+    annual_revenue_yuan: float = Field(
+        description="年均收益（扣衰减后），单位：元"
+    )
+    revenue_per_kwh: float = Field(
+        description="度电平均收益，单位：元/kWh（年均收益 / 年均能量）"
+    )
+    lcoe_ratio: float = Field(
+        description="经济可行性比值 = 度电收益 / LCOE（≥ 1.5 为绿灯，< 1.5 为红灯）"
+    )
+    pass_threshold: float = Field(
+        default=1.5,
+        description="快速筛选通过阈值（建议 1.5）",
+    )
+    screening_result: str = Field(
+        description="筛选结论：'pass'（通过，值得深算）或 'fail'（未通过，明显不行）"
+    )
+
+
+class StorageEconomicsResult(BaseModel):
+    """储能经济性测算结果"""
+
+    capex_total: float = Field(description="总投资 CAPEX（元）")
+    irr: Optional[float] = Field(
+        default=None,
+        description="内部收益率（0–1，如 0.12 表示 12%），无法收敛则为 null",
+    )
+    static_payback_years: Optional[float] = Field(
+        default=None,
+        description="静态回收期（年，可带小数），项目周期内无法回本则为 null",
+    )
+    final_cumulative_net_cashflow: float = Field(
+        description="项目周期末累计净现金流（元）"
+    )
+    yearly_cashflows: List[YearlyCashflowItem] = Field(
+        default_factory=list,
+        description="年度现金流序列",
+    )
+    static_metrics: Optional[StaticEconomicsMetrics] = Field(
+        default=None,
+        description="静态经济性评估指标（第一步快速筛选，可选）",
+    )
+
