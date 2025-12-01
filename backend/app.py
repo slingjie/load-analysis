@@ -9,7 +9,7 @@ import pandas as pd
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from schemas import (
+from .schemas import (
     CleanedPoint,
     CleaningAnalysisResponse,
     CleaningConfigRequest,
@@ -40,10 +40,10 @@ from schemas import (
     StaticEconomicsMetrics,
     YearlyCashflowItem,
 )
-from services import loader, quality
-from services import cycles as cycles_svc
-from services import cleaning as cleaning_svc
-from services import economics as economics_svc
+from .services import loader, quality
+from .services import cycles as cycles_svc
+from .services import cleaning as cleaning_svc
+from .services import economics as economics_svc
 
 
 logger = logging.getLogger("load-analysis")
@@ -974,7 +974,7 @@ async def generate_project_summary_endpoint(
     前端传入项目基本信息与各模块可选数据，后端调用 DeepSeek API 生成 Markdown 报告。
     """
     from datetime import datetime, timezone
-    from services.deepseek_summary import generate_project_summary, DeepSeekError
+    from .services.deepseek_summary import generate_project_summary, DeepSeekError
     
     # 构建项目信息
     project_info = {

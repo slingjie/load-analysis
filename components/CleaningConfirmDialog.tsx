@@ -452,15 +452,15 @@ export const CleaningConfirmDialog: React.FC<Props> = ({
                         </tr>
                       </thead>
                       <tbody>
-                        {analysis.null_spans.slice(0, 10).map((span) => (
-                          <tr key={span.id}>
-                            <td style={styles.td}>
-                              {formatTime(span.start_time)} ~ {formatTime(span.end_time)}
-                            </td>
-                            <td style={styles.td}>
-                              {span.duration_hours.toFixed(1)}h ({span.point_count}点)
-                            </td>
-                            <td style={styles.td}>{span.weekday}</td>
+                    {analysis.null_spans.slice(0, 10).map((span) => (
+                      <tr key={span.id}>
+                        <td style={styles.td}>
+                          {formatTime(span.start_time)} ~ {formatTime(span.end_time)}
+                        </td>
+                        <td style={styles.td}>
+                          {span.duration_hours != null ? span.duration_hours.toFixed(1) : '-'}h ({span.point_count ?? '-'}点)
+                        </td>
+                        <td style={styles.td}>{span.weekday}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -639,16 +639,18 @@ export const CleaningConfirmDialog: React.FC<Props> = ({
                     {analysis.negative_spans.slice(0, 10).map((span) => (
                       <tr key={span.id}>
                         <td style={styles.td}>
-                          {formatTime(span.start_time)} ~ {formatTime(span.end_time)}
+                          {formatTime((span as any).start_time ?? `${span.date} ${span.start_hour}:00`)} ~ {formatTime((span as any).end_time ?? `${span.date} ${span.end_hour}:00`)}
                         </td>
                         <td style={styles.td}>
-                          {span.duration_hours.toFixed(1)}h ({span.point_count}点)
+                          {(span as any).duration_hours != null
+                            ? (span as any).duration_hours.toFixed(1)
+                            : '-'}h ({span.point_count ?? '-'}点)
                         </td>
                         <td style={{...styles.td, color: '#f44336'}}>
-                          {span.min_value.toFixed(2)} kW
+                          {span.min_value != null ? span.min_value.toFixed(2) : '-'} kW
                         </td>
                         <td style={{...styles.td, color: '#f44336'}}>
-                          {span.avg_value.toFixed(2)} kW
+                          {(span as any).avg_value != null ? (span as any).avg_value.toFixed(2) : '-'} kW
                         </td>
                         <td style={styles.td}>{span.weekday}</td>
                       </tr>
