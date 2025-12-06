@@ -76,3 +76,28 @@ export const INITIAL_APP_STATE = {
     return Array.from({ length: 12 }, () => ({ ...base }));
   })(),
 }
+
+// ================== 储能参数模板 ==================
+export interface StorageParamsTemplate {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  params: {
+    c_rate: number;
+    single_side_efficiency: number;
+    depth_of_discharge: number;
+    soc_min: number;
+    soc_max: number;
+    reserve_charge_kw: number;
+    reserve_discharge_kw: number;
+    metering_mode: 'monthly_demand_max' | 'transformer_capacity';
+    energy_formula: 'physics' | 'sample';
+    merge_threshold_minutes: number;
+  };
+  // 排程建议说明（非自动应用，仅供参考）
+  scheduleHint: string;
+}
+
+// 默认模板已清空，由用户自行创建
+export const STORAGE_PARAMS_TEMPLATES: StorageParamsTemplate[] = [];

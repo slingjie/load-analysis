@@ -43,12 +43,30 @@ def parse_load_series(file_bytes: bytes) -> pd.DataFrame:
     """
     raw = loader.load_dataframe(file_bytes)
 
-    # 期待列存在
+    # 兼容多种常见导出格式：
+    # 1) 直接包含 timestamp, load_kw / load 列
+    # 2) 拆分为「数据日期, 时间, 功率(KW)」等中文列名
+
+    # 补齐 timestamp 列：优先使用已有列，其次尝试由「数据日期 + 时间」拼接
     if "timestamp" not in raw.columns:
-        raise CyclesError("未找到时间列（timestamp）。")
-    load_col = "load_kw" if "load_kw" in raw.columns else ("load" if "load" in raw.columns else None)
+        date_col_candidates = ["数据日期", "日期", "date"]
+        time_col_candidates = ["时间", "时刻", "time"]
+        date_col = next((c for c in date_col_candidates if c in raw.columns), None)
+        time_col = next((c for c in time_col_candidates if c in raw.columns), None)
+        if date_col and time_col:
+            raw["timestamp"] = raw[date_col].astype(str).str.strip() + " " + raw[time_col].astype(str).str.strip()
+
+    if "timestamp" not in raw.columns:
+        raise CyclesError("未找到时间列（timestamp / 数据日期+时间）。")
+
+    # 负荷列兼容：load_kw / load / 功率(KW) / 功率(kW) / 功率
+    load_col = None
+    for cand in ["load_kw", "load", "功率(KW)", "功率(kW)", "功率"]:
+        if cand in raw.columns:
+            load_col = cand
+            break
     if load_col is None:
-        raise CyclesError("未找到负荷列（load 或 load_kw）。")
+        raise CyclesError("未找到负荷列（load_kw / load / 功率(KW)）。")
 
     df = raw[["timestamp", load_col]].copy()
     # 统一将带时区的时间戳转换为“本地朴素时间”，与排程的本地日界一致
@@ -685,15 +703,27 @@ def compute_window_avg_days(
         else:
             limit_kw = float(month_max_map.get(ym, 0.0))
 
-        # 无上限或容量→无法计算 cycles
-        if limit_kw <= 0 or cap <= 0:
-            days.append({"date": date_str, "cycles": 0.0})
-            continue
-
         # 当天的 15 分钟序列
         day_start = pd.to_datetime(date_str)
         day_end = day_start + pd.Timedelta(days=1)
         day_sub = s.loc[(s.index >= day_start) & (s.index < day_end)]
+
+        # 判断该天数据是否有效：
+        # 1. 有数据点（point_count > 0）
+        # 2. 至少有一个正数负荷值（has_positive_load）
+        point_count = len(day_sub)
+        has_positive_load = bool((day_sub["load_kw"] > 0).any()) if point_count > 0 else False
+        is_valid = point_count > 0 and has_positive_load
+
+        # 无上限或容量→无法计算 cycles
+        if limit_kw <= 0 or cap <= 0:
+            days.append({
+                "date": date_str,
+                "cycles": 0.0,
+                "is_valid": is_valid,
+                "point_count": point_count,
+            })
+            continue
 
         c1 = masks.get("c1", {})
         c2 = masks.get("c2", {})
@@ -731,7 +761,12 @@ def compute_window_avg_days(
             return min(fc, fd)
 
         cycles_day = _cycle_contrib(c1) + _cycle_contrib(c2)
-        days.append({"date": date_str, "cycles": float(cycles_day)})
+        days.append({
+            "date": date_str,
+            "cycles": float(cycles_day),
+            "is_valid": is_valid,
+            "point_count": point_count,
+        })
 
     # 按日期排序
     days.sort(key=lambda x: x["date"])
@@ -779,7 +814,7 @@ def compute_window_avg_days_with_debug(
             return float(transformer_limit_kw)
         return float(month_max_map.get(ym, 0.0))
 
-    def _window_metrics(day_sub: pd.DataFrame, hour_list: List[int], limit_kw: float, is_charge: bool) -> tuple[dict, float]:
+    def _window_metrics(day_sub: pd.DataFrame, hour_list: List[int], limit_kw: float, is_charge: bool) -> tuple[dict, float, float]:
         hour_set = set(int(h) for h in (hour_list or []))
         sel = day_sub.loc[day_sub.index.hour.map(lambda h: h in hour_set)]
         points = int(len(sel))
@@ -796,7 +831,7 @@ def compute_window_avg_days_with_debug(
                 "base_kwh_step15": 0.0,
                 "e_grid_kwh_step15": 0.0,
                 "full_ratio_step15": 0.0,
-            }, 0.0
+            }, 0.0, 0.0
         avg_load = float(sel["load_kw"].mean())
         hours = float(points) * 0.25
         allow = max(0.0, (limit_kw - reserve_ch - avg_load) if is_charge else (avg_load - reserve_dis))
@@ -849,7 +884,7 @@ def compute_window_avg_days_with_debug(
             "full_ratio_physics_step15": full_ratio_physics_step15,
             "e_grid_kwh_sample_step15": e_grid_sample_step15,
             "full_ratio_sample_step15": full_ratio_sample_step15,
-        }, full_ratio
+        }, full_ratio, e_grid
 
     days: List[dict] = []
     debug_rows: List[dict] = []
@@ -860,14 +895,20 @@ def compute_window_avg_days_with_debug(
         day_end = day_start + pd.Timedelta(days=1)
         day_sub = s.loc[(s.index >= day_start) & (s.index < day_end)]
 
+        # 判断该天数据是否有效
+        point_count = len(day_sub)
+        has_positive_load = bool((day_sub["load_kw"] > 0).any()) if point_count > 0 else False
+        is_valid = point_count > 0 and has_positive_load
+
         c1 = masks.get("c1", {})
         c2 = masks.get("c2", {})
 
         # c1 charge/discharge
         m1c = c1.get("charge_hours", [])
         m1d = c1.get("discharge_hours", [])
-        met1c, fc1 = _window_metrics(day_sub, m1c, limit_kw, True)
-        met1d, fd1 = _window_metrics(day_sub, m1d, limit_kw, False)
+        met1c, fc1, e1c = _window_metrics(day_sub, m1c, limit_kw, True)
+        met1d, fd1, e1d = _window_metrics(day_sub, m1d, limit_kw, False)
+        
         c1_cycles = min(fc1, fd1)
 
         debug_rows.append({
@@ -890,8 +931,9 @@ def compute_window_avg_days_with_debug(
         # c2 charge/discharge
         m2c = c2.get("charge_hours", [])
         m2d = c2.get("discharge_hours", [])
-        met2c, fc2 = _window_metrics(day_sub, m2c, limit_kw, True)
-        met2d, fd2 = _window_metrics(day_sub, m2d, limit_kw, False)
+        met2c, fc2, e2c = _window_metrics(day_sub, m2c, limit_kw, True)
+        met2d, fd2, e2d = _window_metrics(day_sub, m2d, limit_kw, False)
+        
         c2_cycles = min(fc2, fd2)
 
         debug_rows.append({
@@ -911,7 +953,12 @@ def compute_window_avg_days_with_debug(
             **met2d,
         })
 
-        days.append({"date": date_str, "cycles": float(c1_cycles + c2_cycles)})
+        days.append({
+            "date": date_str,
+            "cycles": float(c1_cycles + c2_cycles),
+            "is_valid": is_valid,
+            "point_count": point_count,
+        })
 
     return days, debug_rows
 

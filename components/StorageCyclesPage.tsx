@@ -21,55 +21,59 @@ import {
 } from '../storageApi';
 import UploadProgressRing from './UploadProgressRing';
 import CleaningConfirmDialog from './CleaningConfirmDialog';
+import { BatchCapacityChart } from './BatchCapacityChart';
+import { STORAGE_PARAMS_TEMPLATES, type StorageParamsTemplate } from '../constants';
 
 const CONFIG_STORAGE_PREFIX = 'storageCyclesConfig:';
+const USER_TEMPLATES_STORAGE_KEY = 'storageCyclesUserTemplates';
 const SOLVE_CAPACITY_STEPS = 8; // 反推容量时默认预计算步数（可通过界面修改实际步数）
 
-// 基于后端返回的日度 cycles 计算“全年合计等效循环数”
+// 判断某天是否有有效的负荷数据
+// 优先使用后端返回的 is_valid 字段，否则回退到前端判断逻辑
+const hasValidDayData = (d: any): boolean => {
+  if (!d) return false;
+  
+  // 优先使用后端的 is_valid 标记
+  if (typeof d.is_valid === 'boolean') {
+    return d.is_valid;
+  }
+  
+  // 回退逻辑：cycles > 0 表示有效
+  return Number(d.cycles ?? 0) > 0;
+};
+
+// 基于后端返回的日度 cycles 计算"全年合计等效循环数"
+// 有效天数判断逻辑（由后端 is_valid 字段决定）：
+// ✅ is_valid = true → 有效（该天有正负荷数据）
+// ❌ is_valid = false → 无效（该天负荷数据为空或全为零）
+// ❌ 完全没有日期记录 → 无效
 const computeYearEquivalentCyclesFromDays = (
   days: BackendStorageCyclesResponse['days'] | undefined | null,
 ): number => {
   if (!days || !days.length) return 0;
-  const monthDaySets: Array<Set<string>> = Array.from({ length: 12 }, () => new Set<string>());
-  const monthTotal: number[] = new Array(12).fill(0);
-  const monthYear: Array<number | null> = new Array(12).fill(null);
+  
+  const validDaySet = new Set<string>();
+  let totalCycles = 0;
 
   days.forEach(d => {
     if (!d?.date) return;
-    const parts = String(d.date).split('-');
-    if (parts.length !== 3) return;
-    const year = parseInt(parts[0], 10);
-    const month = parseInt(parts[1], 10);
-    if (!year || !month || month < 1 || month > 12) return;
-    const idx = month - 1;
     const dateKey = String(d.date);
     const cyclesVal = Number(d.cycles ?? 0);
-    // 只有 cycles > 0 的日期才计入"有效天数"
-    if (cyclesVal > 0) {
-      monthDaySets[idx].add(dateKey);
+    
+    // 使用后端的有效性判断
+    if (hasValidDayData(d)) {
+      validDaySet.add(dateKey);
     }
-    monthTotal[idx] += cyclesVal;
-    if (monthYear[idx] == null) {
-      monthYear[idx] = year;
-    }
+    totalCycles += cyclesVal;
   });
 
-  const monthEqCyclesArr: Array<number | null> = new Array(12).fill(null);
-  for (let i = 0; i < 12; i++) {
-    const validDays = monthDaySets[i].size;
-    if (validDays > 0) {
-      const y = monthYear[i] ?? new Date().getFullYear();
-      const monthDaysCount = new Date(y, i + 1, 0).getDate();
-      const total = monthTotal[i];
-      monthEqCyclesArr[i] = (total / validDays) * monthDaysCount;
-    }
+  const yearValidDays = validDaySet.size;
+  
+  // 全年等效循环数 = (总循环数 / 有效天数) × 365
+  if (yearValidDays > 0) {
+    return (totalCycles / yearValidDays) * 365;
   }
-
-  const yearEqCyclesVal = monthEqCyclesArr.reduce(
-    (sum, v) => (v != null ? sum + v : sum),
-    0,
-  );
-  return yearEqCyclesVal;
+  return 0;
 };
 
 interface Props {
@@ -137,10 +141,200 @@ export const StorageCyclesPage: React.FC<Props> = ({
     bestCapacityKwh: number;
     bestYearEqCycles: number;
   } | null>(null);
+
+  // ================== 测算模式状态 ==================
+  // 测算模式：single=单次测算，batch=批量容量对比
+  const [testMode, setTestMode] = useState<'single' | 'batch'>('single');
+
+  // ================== 批量容量对比相关状态 ==================
+  interface BatchCapacityItem {
+    capacityKwh: number;
+    yearEqCycles: number;
+    firstYearProfit: number;
+    response: BackendStorageCyclesResponse | null;
+    status: 'pending' | 'computing' | 'done' | 'error';
+    errorMsg?: string;
+  }
+  const [batchResults, setBatchResults] = useState<BatchCapacityItem[]>([]);
+  const [selectedBatchIdx, setSelectedBatchIdx] = useState<number | null>(null);
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null);
+  const [isBatchComputing, setIsBatchComputing] = useState(false);
+  // 功率模式：fixed=固定功率（使用 reserve_charge_kw/reserve_discharge_kw），c_rate=倍率联动
+  const [powerMode, setPowerMode] = useState<'fixed' | 'c_rate'>('c_rate');
+  // 当前选中的模板 ID（null 表示自定义）
+  const [activeTemplateId, setActiveTemplateId] = useState<string | null>('peak_shaving');
   const didAutoApplyDefaultRef = useRef(false);
   // 最近一次完整测算的参数与文件，用于按需导出 Excel 报表
   const lastPayloadRef = useRef<StorageParamsPayload | null>(null);
   const lastFileRef = useRef<File | null>(null);
+
+  // ================== 用户自定义模板管理 ==================
+  // 用户自定义模板列表
+  const [userTemplates, setUserTemplates] = useState<StorageParamsTemplate[]>([]);
+  // 模板编辑对话框状态
+  const [templateEditVisible, setTemplateEditVisible] = useState(false);
+  // 正在编辑的模板（null 表示新建）
+  const [editingTemplate, setEditingTemplate] = useState<StorageParamsTemplate | null>(null);
+  // 编辑表单数据
+  const [templateForm, setTemplateForm] = useState<{
+    name: string;
+    icon: string;
+    description: string;
+    scheduleHint: string;
+  }>({ name: '', icon: '⚡', description: '', scheduleHint: '' });
+
+  // 加载用户模板
+  const loadUserTemplates = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = window.localStorage.getItem(USER_TEMPLATES_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          setUserTemplates(parsed);
+        }
+      }
+    } catch (e) {
+      console.error('加载用户模板失败:', e);
+    }
+  }, []);
+
+  // 保存用户模板到 localStorage
+  const saveUserTemplates = useCallback((templates: StorageParamsTemplate[]) => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(USER_TEMPLATES_STORAGE_KEY, JSON.stringify(templates));
+      setUserTemplates(templates);
+    } catch (e) {
+      console.error('保存用户模板失败:', e);
+    }
+  }, []);
+
+  // 初始化加载用户模板
+  useEffect(() => {
+    loadUserTemplates();
+  }, [loadUserTemplates]);
+
+  // 合并系统模板和用户模板
+  const allTemplates = useMemo(() => {
+    return [...STORAGE_PARAMS_TEMPLATES, ...userTemplates];
+  }, [userTemplates]);
+
+  // 打开新建模板对话框
+  const handleCreateTemplate = () => {
+    setEditingTemplate(null);
+    setTemplateForm({
+      name: '',
+      icon: '⚡',
+      description: '',
+      scheduleHint: '',
+    });
+    setTemplateEditVisible(true);
+  };
+
+  // 打开编辑模板对话框
+  const handleEditTemplate = (template: StorageParamsTemplate) => {
+    setEditingTemplate(template);
+    setTemplateForm({
+      name: template.name,
+      icon: template.icon,
+      description: template.description,
+      scheduleHint: template.scheduleHint,
+    });
+    setTemplateEditVisible(true);
+  };
+
+  // 保存模板（新建或更新）
+  const handleSaveTemplate = () => {
+    if (!templateForm.name.trim()) {
+      setConfigNotice('请输入模板名称');
+      return;
+    }
+    
+    const templateParams = {
+      c_rate: params.c_rate,
+      single_side_efficiency: params.single_side_efficiency,
+      depth_of_discharge: params.depth_of_discharge,
+      soc_min: params.soc_min,
+      soc_max: params.soc_max,
+      reserve_charge_kw: params.reserve_charge_kw,
+      reserve_discharge_kw: params.reserve_discharge_kw,
+      metering_mode: params.metering_mode,
+      energy_formula: params.energy_formula,
+      merge_threshold_minutes: params.merge_threshold_minutes,
+    };
+
+    if (editingTemplate) {
+      // 更新现有模板
+      const isSystemTemplate = STORAGE_PARAMS_TEMPLATES.some(t => t.id === editingTemplate.id);
+      if (isSystemTemplate) {
+        // 系统模板不能直接修改，创建一个用户副本
+        const newId = `user_${Date.now()}`;
+        const newTemplate: StorageParamsTemplate = {
+          id: newId,
+          name: templateForm.name.trim(),
+          icon: templateForm.icon,
+          description: templateForm.description.trim(),
+          scheduleHint: templateForm.scheduleHint.trim(),
+          params: templateParams,
+        };
+        saveUserTemplates([...userTemplates, newTemplate]);
+        setActiveTemplateId(newId);
+        setConfigNotice(`已基于"${editingTemplate.name}"创建新模板"${newTemplate.name}"`);
+      } else {
+        // 更新用户模板
+        const updated = userTemplates.map(t =>
+          t.id === editingTemplate.id
+            ? {
+                ...t,
+                name: templateForm.name.trim(),
+                icon: templateForm.icon,
+                description: templateForm.description.trim(),
+                scheduleHint: templateForm.scheduleHint.trim(),
+                params: templateParams,
+              }
+            : t
+        );
+        saveUserTemplates(updated);
+        setConfigNotice(`模板"${templateForm.name}"已更新`);
+      }
+    } else {
+      // 新建模板
+      const newId = `user_${Date.now()}`;
+      const newTemplate: StorageParamsTemplate = {
+        id: newId,
+        name: templateForm.name.trim(),
+        icon: templateForm.icon,
+        description: templateForm.description.trim(),
+        scheduleHint: templateForm.scheduleHint.trim(),
+        params: templateParams,
+      };
+      saveUserTemplates([...userTemplates, newTemplate]);
+      setActiveTemplateId(newId);
+      setConfigNotice(`模板"${newTemplate.name}"已创建`);
+    }
+    setTemplateEditVisible(false);
+  };
+
+  // 删除用户模板
+  const handleDeleteTemplate = (templateId: string) => {
+    const isSystemTemplate = STORAGE_PARAMS_TEMPLATES.some(t => t.id === templateId);
+    if (isSystemTemplate) {
+      setConfigNotice('系统预设模板不能删除');
+      return;
+    }
+    const template = userTemplates.find(t => t.id === templateId);
+    if (!template) return;
+    
+    if (window.confirm(`确定删除模板"${template.name}"吗？`)) {
+      const updated = userTemplates.filter(t => t.id !== templateId);
+      saveUserTemplates(updated);
+      if (activeTemplateId === templateId) {
+        setActiveTemplateId(null);
+      }
+      setConfigNotice(`模板"${template.name}"已删除`);
+    }
+  };
 
   // ================== 数据清洗相关状态 ==================
   // 是否启用清洗流程（用户可关闭）
@@ -812,6 +1006,35 @@ export const StorageCyclesPage: React.FC<Props> = ({
     }
   };
 
+  // 应用模板参数
+  const handleApplyTemplate = (template: StorageParamsTemplate) => {
+    setParams(p => ({
+      ...p,
+      c_rate: template.params.c_rate,
+      single_side_efficiency: template.params.single_side_efficiency,
+      depth_of_discharge: template.params.depth_of_discharge,
+      soc_min: template.params.soc_min,
+      soc_max: template.params.soc_max,
+      reserve_charge_kw: template.params.reserve_charge_kw,
+      reserve_discharge_kw: template.params.reserve_discharge_kw,
+      metering_mode: template.params.metering_mode,
+      energy_formula: template.params.energy_formula,
+      merge_threshold_minutes: template.params.merge_threshold_minutes,
+    }));
+    setActiveTemplateId(template.id);
+    setConfigNotice(`已应用模板"${template.name}"，排程建议：${template.scheduleHint}`);
+  };
+
+  // 修改模板关联参数时标记为自定义
+  const handleTemplateParamChange = <K extends keyof typeof params>(key: K, value: typeof params[K]) => {
+    setParams(p => ({ ...p, [key]: value }));
+    // 只有模板关联的参数变化时才标记为自定义
+    const templateKeys = ['c_rate', 'single_side_efficiency', 'depth_of_discharge', 'soc_min', 'soc_max', 'metering_mode', 'energy_formula', 'merge_threshold_minutes'];
+    if (templateKeys.includes(key)) {
+      setActiveTemplateId(null);
+    }
+  };
+
   const handleSaveConfig = () => {
     if (typeof window === 'undefined') return;
     const name = savedConfigName.trim();
@@ -860,6 +1083,8 @@ export const StorageCyclesPage: React.FC<Props> = ({
             setTargetYearEqCyclesInput(String(cfg.targetYearEqCyclesInput));
           }
         }
+        // 加载保存配置后，标记为自定义（保存的配置可能已被修改，不一定匹配任何模板）
+        setActiveTemplateId(null);
         setSavedConfigName(selectedSavedConfig);
         setConfigNotice(`已加载“${selectedSavedConfig}”`);
       } else {
@@ -1130,6 +1355,336 @@ export const StorageCyclesPage: React.FC<Props> = ({
     }
   };
 
+  // 批量容量对比计算：逐个容量点计算，边算边更新表格
+  const handleBatchCapacityCompute = async () => {
+    setError(null);
+    setSolveSuggestion(null);
+    setBatchResults([]);
+    setSelectedBatchIdx(null);
+    setBatchProgress(null);
+
+    if (!(solveStartCapacityKwh > 0)) {
+      setError('请先输入大于 0 的起始容量');
+      return;
+    }
+    if (!(solveStepCapacityKwh > 0)) {
+      setError('请先输入大于 0 的容量步长');
+      return;
+    }
+    if (!(solveSteps > 0)) {
+      setError('请先输入大于 0 的预计算步数');
+      return;
+    }
+
+    const input = fileRef.current;
+    let file: File | null = null;
+    if (input && input.files && input.files.length > 0) {
+      file = input.files[0];
+      setFileName(prev => prev || file.name);
+    }
+    if (!file && !useAnalyzedData) {
+      setError('请选择待测算的负荷文件（CSV/XLSX）或勾选"使用负荷分析已上传数据"');
+      return;
+    }
+
+    if (useAnalyzedData && (!externalCleanedData || externalCleanedData.length === 0)) {
+      setError('"负荷分析"页没有可用数据，请先在"负荷分析"页上传并处理，或在本页选择负荷文件。');
+      return;
+    }
+
+    // ===== 新增：批量计算也支持数据清洗 =====
+    let pointsPayload: { timestamp: string; load_kwh: number }[] | undefined = undefined;
+
+    if (enableCleaning) {
+      console.log('[BatchCompute] 清洗流程检查:', { enableCleaning, hasFile: !!file, useAnalyzedData });
+      
+      // 优先使用已清洗过的数据
+      if (cleanedPointsRef.current && cleanedPointsRef.current.length > 0) {
+        console.log('[BatchCompute] 使用已清洗的数据:', cleanedPointsRef.current.length, '个点');
+        pointsPayload = cleanedPointsRef.current;
+      } else {
+        // 需要先执行清洗
+        let dataForCleaning: File | { timestamp: string; load_kwh: number }[] | null = null;
+        let dataSource: 'file' | 'external' = 'file';
+        
+        if (file && !useAnalyzedData) {
+          dataForCleaning = file;
+          dataSource = 'file';
+        } else if (useAnalyzedData && externalCleanedData && externalCleanedData.length > 0) {
+          dataForCleaning = externalCleanedData
+            .slice()
+            .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+            .map(p => ({
+              timestamp: toLocalNaiveString(p.timestamp),
+              load_kwh: Number(p.load),
+            }));
+          dataSource = 'external';
+        }
+        
+        if (dataForCleaning) {
+          try {
+            console.log('[BatchCompute] 开始数据清洗分析...', { dataSource });
+            setLoading(true);
+            setCyclePhase('uploading');
+            setShowCycleRing(true);
+            setCycleProgressPct(10);
+            setProgressStep('正在分析数据质量...');
+            
+            const analysis = await analyzeDataForCleaning(dataForCleaning);
+            console.log('[BatchCompute] 分析结果:', analysis);
+            setCycleProgressPct(40);
+            
+            const needsConfirm = analysis.zero_spans.length > 0 || 
+                                analysis.negative_spans.length > 0 ||
+                                analysis.null_point_count > 0;
+            
+            if (needsConfirm) {
+              // 保存状态，等待用户确认后再批量计算
+              console.log('[BatchCompute] 需要用户确认，显示清洗对话框');
+              setCleaningAnalysis(analysis);
+              setCleaningDataSource(dataSource);
+              if (dataSource === 'file') {
+                pendingFileRef.current = file;
+                pendingPointsRef.current = null;
+              } else {
+                pendingFileRef.current = null;
+                pendingPointsRef.current = dataForCleaning as { timestamp: string; load_kwh: number }[];
+              }
+              setCleaningDialogVisible(true);
+              setLoading(false);
+              setShowCycleRing(false);
+              setCyclePhase('idle');
+              setProgressStep('');
+              setError('请先在弹出的对话框中完成数据清洗配置，然后重新点击"开始批量计算"');
+              return;
+            }
+            
+            // 无异常，使用默认配置清洗
+            setCycleProgressPct(50);
+            setProgressStep('正在处理数据...');
+            const defaultConfig: CleaningConfigRequest = {
+              null_strategy: 'interpolate',
+              negative_strategy: 'keep',
+              zero_decisions: {},
+            };
+            const cleanResult = await applyDataCleaning(dataForCleaning, defaultConfig);
+            
+            cleanedPointsRef.current = cleanResult.cleaned_points.map(p => ({
+              timestamp: p.timestamp,
+              load_kwh: p.load_kwh,
+            }));
+            
+            console.log('[BatchCompute] 自动清洗完成', {
+              nullInterpolated: cleanResult.null_points_interpolated,
+              totalPoints: cleanedPointsRef.current.length,
+            });
+            
+            pointsPayload = cleanedPointsRef.current;
+            setLoading(false);
+            setShowCycleRing(false);
+            setProgressStep('');
+          } catch (e: any) {
+            setLoading(false);
+            setShowCycleRing(false);
+            setCyclePhase('error');
+            setProgressStep('');
+            setError(`数据分析失败: ${e?.message || '未知错误'}`);
+            return;
+          }
+        }
+      }
+    } else {
+      // 未启用清洗，使用原始数据
+      pointsPayload = (useAnalyzedData && externalCleanedData && externalCleanedData.length > 0)
+        ? externalCleanedData
+            .slice()
+            .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+            .map(p => ({
+              timestamp: toLocalNaiveString(p.timestamp),
+              load_kwh: Number(p.load),
+            }))
+        : undefined;
+    }
+
+    const baseStorage = {
+      c_rate: params.c_rate,
+      single_side_efficiency: params.single_side_efficiency,
+      depth_of_discharge: params.depth_of_discharge,
+      soc_min: params.soc_min,
+      soc_max: params.soc_max,
+      reserve_charge_kw: params.reserve_charge_kw,
+      reserve_discharge_kw: params.reserve_discharge_kw,
+      metering_mode: params.metering_mode,
+      transformer_capacity_kva: params.metering_mode === 'transformer_capacity' ? params.transformer_capacity_kva : undefined,
+      transformer_power_factor: params.metering_mode === 'transformer_capacity' ? params.transformer_power_factor : undefined,
+      calc_style: 'window_avg' as const,
+      energy_formula: params.energy_formula,
+      merge_threshold_minutes: params.merge_threshold_minutes,
+    };
+
+    const hasDischarge = Array.isArray(scheduleData.monthlySchedule)
+      && scheduleData.monthlySchedule.some((monthRow: any[]) =>
+        Array.isArray(monthRow) && monthRow.some(cell => cell?.op === '放'));
+    const hasAnyPrice = Array.isArray(scheduleData.prices)
+      && scheduleData.prices.some(mp => mp && Object.values(mp).some(v => v != null));
+    if (!hasDischarge) {
+      setError('当前排程没有放电窗口，请先在排程/逻辑中设置"放"时段后再测算。');
+      return;
+    }
+    if (!hasAnyPrice) {
+      setError('当前电价配置全部为空，请先设置 TOU 电价（含尖/峰/平/谷）。');
+      return;
+    }
+
+    const v = validateParams();
+    if (v) {
+      setError(v);
+      return;
+    }
+
+    const steps = solveSteps > 0 ? solveSteps : SOLVE_CAPACITY_STEPS;
+
+    // 初始化批量结果（全部 pending）
+    const initialItems: BatchCapacityItem[] = [];
+    for (let i = 0; i < steps; i++) {
+      const cap = solveStartCapacityKwh + i * solveStepCapacityKwh;
+      if (cap > 0) {
+        initialItems.push({
+          capacityKwh: cap,
+          yearEqCycles: 0,
+          firstYearProfit: 0,
+          response: null,
+          status: 'pending',
+        });
+      }
+    }
+    setBatchResults(initialItems);
+    setBatchProgress({ current: 0, total: initialItems.length });
+    setIsBatchComputing(true);
+
+    // 逐个计算，边算边更新
+    for (let i = 0; i < initialItems.length; i++) {
+      // 标记当前行为 computing
+      setBatchResults(prev => prev.map((item, idx) =>
+        idx === i ? { ...item, status: 'computing' } : item
+      ));
+
+      const cap = initialItems[i].capacityKwh;
+      
+      // 根据功率模式计算充放电功率
+      // c_rate 模式：功率 = 容量 × 倍率；fixed 模式：使用固定余量值
+      const dynamicPowerKw = powerMode === 'c_rate' 
+        ? cap * params.c_rate 
+        : params.reserve_charge_kw; // fixed 模式下使用 reserve 值作为功率上限
+      
+      const payload: StorageParamsPayload = {
+        storage: {
+          ...baseStorage,
+          capacity_kwh: cap,
+          // 倍率联动模式下，动态计算功率；固定模式下保持原有 reserve 值
+          reserve_charge_kw: powerMode === 'c_rate' ? 0 : params.reserve_charge_kw,
+          reserve_discharge_kw: powerMode === 'c_rate' ? 0 : params.reserve_discharge_kw,
+        },
+        strategySource: {
+          monthlySchedule: scheduleData.monthlySchedule,
+          dateRules: scheduleData.dateRules,
+        },
+        monthlyTouPrices: scheduleData.prices,
+        points: pointsPayload,
+      };
+
+      try {
+        const resp = await computeStorageCycles(file, payload);
+        const yearEq = computeYearEquivalentCyclesFromDays(resp.days);
+        const profit = resp.year?.profit?.main?.profit ?? 0;
+
+        setBatchResults(prev => prev.map((item, idx) =>
+          idx === i ? {
+            ...item,
+            yearEqCycles: yearEq,
+            firstYearProfit: profit,
+            response: resp,
+            status: 'done',
+          } : item
+        ));
+      } catch (err: any) {
+        setBatchResults(prev => prev.map((item, idx) =>
+          idx === i ? {
+            ...item,
+            status: 'error',
+            errorMsg: err?.message || '计算失败',
+          } : item
+        ));
+      }
+
+      setBatchProgress({ current: i + 1, total: initialItems.length });
+    }
+
+    setIsBatchComputing(false);
+  };
+
+  // 选中批量对比表中的某行，展示其详细结果
+  const handleSelectBatchRow = (idx: number) => {
+    setSelectedBatchIdx(idx);
+    const item = batchResults[idx];
+    if (item && item.response) {
+      setResult(item.response);
+      setParams(p => ({ ...p, capacity_kwh: item.capacityKwh }));
+      // 更新 lastPayloadRef 以支持导出
+      const pointsPayload = (useAnalyzedData && externalCleanedData && externalCleanedData.length > 0)
+        ? externalCleanedData
+            .slice()
+            .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+            .map(p => ({
+              timestamp: toLocalNaiveString(p.timestamp),
+              load_kwh: Number(p.load),
+            }))
+        : undefined;
+      lastPayloadRef.current = {
+        storage: {
+          capacity_kwh: item.capacityKwh,
+          c_rate: params.c_rate,
+          single_side_efficiency: params.single_side_efficiency,
+          depth_of_discharge: params.depth_of_discharge,
+          soc_min: params.soc_min,
+          soc_max: params.soc_max,
+          reserve_charge_kw: params.reserve_charge_kw,
+          reserve_discharge_kw: params.reserve_discharge_kw,
+          metering_mode: params.metering_mode,
+          transformer_capacity_kva: params.metering_mode === 'transformer_capacity' ? params.transformer_capacity_kva : undefined,
+          transformer_power_factor: params.metering_mode === 'transformer_capacity' ? params.transformer_power_factor : undefined,
+          calc_style: 'window_avg' as const,
+          energy_formula: params.energy_formula,
+          merge_threshold_minutes: params.merge_threshold_minutes,
+        },
+        strategySource: {
+          monthlySchedule: scheduleData.monthlySchedule,
+          dateRules: scheduleData.dateRules,
+        },
+        monthlyTouPrices: scheduleData.prices,
+        points: pointsPayload,
+      };
+    }
+  };
+
+  // 找到最接近目标循环数的行索引
+  const closestBatchIdx = useMemo(() => {
+    const target = Number(targetYearEqCyclesInput);
+    if (!batchResults.length || !Number.isFinite(target) || target <= 0) return -1;
+    let bestIdx = -1;
+    let bestDiff = Infinity;
+    batchResults.forEach((item, idx) => {
+      if (item.status === 'done') {
+        const diff = Math.abs(item.yearEqCycles - target);
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          bestIdx = idx;
+        }
+      }
+    });
+    return bestIdx;
+  }, [batchResults, targetYearEqCyclesInput]);
+
   // 按需导出 Excel 报表：复用最近一次测算的 payload 与文件，仅在用户点击时触发后端导出
   const handleExportExcel = async () => {
     if (!result) {
@@ -1211,7 +1766,8 @@ export const StorageCyclesPage: React.FC<Props> = ({
     })();
     const ratioFromBackend = (() => {
       const v =
-        raw.ratio ??
+        raw.tip_ratio ??
+        raw.ratio_tip ??
         (raw as any)?.tip_ratio ??
         (raw as any)?.ratio_tip ??
         null;
@@ -1336,12 +1892,10 @@ export const StorageCyclesPage: React.FC<Props> = ({
       const idx = month - 1;
       const dateKey = String(d.date);
       const cyclesVal = Number(d.cycles ?? 0);
-      // 判断该日期是否有实际数据：cycles > 0 或 profit 存在且非空
-      // 只有有实际数据的日期才计入"有效天数"
-      const hasValidData =
-        cyclesVal > 0 ||
-        (d.profit != null && typeof d.profit === 'object' && Object.keys(d.profit).length > 0);
-      if (hasValidData) {
+      // 有效天数判断：使用后端返回的 is_valid 标记
+      // is_valid = true → 该天有正负荷数据
+      // is_valid = false → 该天无负荷数据或负荷全为零
+      if (hasValidDayData(d)) {
         monthDaySets[idx].add(dateKey);
         yearDaySet.add(dateKey);
       }
@@ -1394,19 +1948,21 @@ export const StorageCyclesPage: React.FC<Props> = ({
         const fDischarge = firstDischargeCycles[i];
         const sCharge = secondChargeCycles[i];
         const sDischarge = secondDischargeCycles[i];
-        firstChargeRatePct[i] = d > 0 ? (fCharge / d) * 100 : null;
-        firstDischargeRatePct[i] = d > 0 ? (fDischarge / d) * 100 : null;
-        secondChargeRatePct[i] = d > 0 ? (sCharge / d) * 100 : null;
-        secondDischargeRatePct[i] = d > 0 ? (sDischarge / d) * 100 : null;
+        firstChargeRatePct[i] = d > 0 ? fCharge / d : null;
+        firstDischargeRatePct[i] = d > 0 ? fDischarge / d : null;
+        secondChargeRatePct[i] = d > 0 ? sCharge / d : null;
+        secondDischargeRatePct[i] = d > 0 ? sDischarge / d : null;
       }
     }
 
     const yearValidDaysCount = yearDaySet.size;
     const yearTotalCyclesVal = monthTotal.reduce((sum, v) => sum + v, 0);
-    const yearEqCyclesVal = monthEqCyclesArr.reduce(
-      (sum, v) => (v != null ? sum + v : sum),
-      0,
-    );
+    
+    // 修复：全年等效循环数应基于全年有效天数的日均循环数 × 365
+    // 而不是简单累加各月的等效值（会漏掉整月无数据的月份）
+    const yearEqCyclesVal = yearValidDaysCount > 0
+      ? (yearTotalCyclesVal / yearValidDaysCount) * 365
+      : 0;
 
     return {
       monthValidDays: monthValidDaysArr,
@@ -1758,9 +2314,6 @@ export const StorageCyclesPage: React.FC<Props> = ({
           </button>
           <span className="text-sm text-slate-600 whitespace-nowrap max-w-[160px] overflow-hidden text-ellipsis">{fileName || '未选择文件'}</span>
           <div className="flex items-center gap-2 w-full">
-            <button className="ml-2 px-3 py-1.5 rounded bg-green-600 text-white text-sm disabled:opacity-60" onClick={handleUpload} disabled={loading}>
-              {cyclePhase === 'uploading' ? '上传中…' : cyclePhase === 'computing' ? '计算中…' : '开始测算'}
-            </button>
             {showCycleRing && (
               <div className="flex items-center gap-2">
                 <UploadProgressRing
@@ -1840,309 +2393,881 @@ export const StorageCyclesPage: React.FC<Props> = ({
           </span>
         </div>
 
-        {/* 参数表单（简化）：基础参数 + 高级设置折叠 */}
-        <div id="section-cycles-params" className="scroll-mt-24 space-y-3 text-sm">
-          {/* 常规配置标题与说明 */}
-          <div className="flex items-baseline justify-between">
-            <div className="text-sm font-semibold text-slate-800">常规配置</div>
-            <div className="text-[11px] text-slate-500">
-              建议先设置容量与余量，再根据需求选择计费口径与能量公式。
+        {/* 参数表单：模板选择 + 左右双栏布局（基础 + 高级） */}
+        <div id="section-cycles-params" className="scroll-mt-24 space-y-4 text-sm">
+          {/* 快速模板选择 */}
+          <div className="bg-gradient-to-r from-slate-50 to-white border border-slate-200 rounded-lg p-3">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-sm font-semibold text-slate-800">📋 快速模板</span>
+              <span className="text-xs text-slate-500">选择场景模板快速配置参数</span>
+              {activeTemplateId && (
+                <span className="ml-auto px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded text-xs">
+                  当前: {allTemplates.find(t => t.id === activeTemplateId)?.name}
+                </span>
+              )}
+              {activeTemplateId === null && (
+                <span className="ml-auto px-2 py-0.5 bg-slate-200 text-slate-600 rounded text-xs">
+                  已自定义
+                </span>
+              )}
             </div>
-          </div>
-          {/* 基础参数：高频必填（常规配置） */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <label className="flex flex-col gap-1">
-              <span>容量</span>
-              <div className="flex items-center gap-1">
-                <input
-                  className="border rounded px-2 py-1 flex-1"
-                  type="number"
-                  step="1"
-                  min="1"
-                  value={params.capacity_kwh}
-                  onChange={e => setParams(p => ({ ...p, capacity_kwh: Number(e.target.value) }))}
-                />
-                <span className="text-xs text-slate-500 pr-1">kWh</span>
-              </div>
-              <div className="text-[11px] text-slate-500 mt-0.5">
-                储能额定容量，用于计算可参与调度的能量规模。
-              </div>
-            </label>
-            <label className="flex flex-col gap-1">
-              <span>充电余量</span>
-              <div className="flex items-center gap-1">
-                <input
-                  className="border rounded px-2 py-1 flex-1"
-                  type="number"
-                  step="1"
-                  min="0"
-                  value={params.reserve_charge_kw}
-                  onChange={e => setParams(p => ({ ...p, reserve_charge_kw: Number(e.target.value) }))}
-                />
-                <span className="text-xs text-slate-500 pr-1">kW</span>
-              </div>
-              <div className="text-[11px] text-slate-500 mt-0.5">
-                为上游负荷预留的充电功率，上限越大可用充电功率越小。
-              </div>
-            </label>
-            <label className="flex flex-col gap-1">
-              <span>放电余量</span>
-              <div className="flex items-center gap-1">
-                <input
-                  className="border rounded px-2 py-1 flex-1"
-                  type="number"
-                  step="1"
-                  min="0"
-                  value={params.reserve_discharge_kw}
-                  onChange={e => setParams(p => ({ ...p, reserve_discharge_kw: Number(e.target.value) }))}
-                />
-                <span className="text-xs text-slate-500 pr-1">kW</span>
-              </div>
-              <div className="text-[11px] text-slate-500 mt-0.5">
-                为下游负荷预留的放电功率，上限越大可用放电功率越小。
-              </div>
-            </label>
-            <label className="flex flex-col gap-1">
-              <span>计费口径</span>
-              <select
-                className="border rounded px-2 py-1"
-                value={params.metering_mode}
-                onChange={e => setParams(p => ({ ...p, metering_mode: e.target.value as any }))}
+            <div className="flex flex-wrap gap-2">
+              {/* 系统预设模板 */}
+              {STORAGE_PARAMS_TEMPLATES.map(template => (
+                <div key={template.id} className="relative group">
+                  <button
+                    type="button"
+                    onClick={() => handleApplyTemplate(template)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all flex items-center gap-1.5 ${
+                      activeTemplateId === template.id
+                        ? 'bg-emerald-600 text-white shadow-md'
+                        : 'bg-white border border-slate-300 text-slate-700 hover:border-emerald-400 hover:bg-emerald-50'
+                    }`}
+                    title={template.description}
+                  >
+                    <span>{template.icon}</span>
+                    <span>{template.name}</span>
+                  </button>
+                  {/* 系统模板编辑按钮（会创建副本） */}
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); handleEditTemplate(template); }}
+                    className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-slate-500 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                    title="基于此模板创建新模板"
+                  >
+                    ✎
+                  </button>
+                </div>
+              ))}
+              {/* 用户自定义模板 */}
+              {userTemplates.map(template => (
+                <div key={template.id} className="relative group">
+                  <button
+                    type="button"
+                    onClick={() => handleApplyTemplate(template)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all flex items-center gap-1.5 ${
+                      activeTemplateId === template.id
+                        ? 'bg-blue-600 text-white shadow-md'
+                        : 'bg-blue-50 border border-blue-300 text-blue-700 hover:border-blue-400 hover:bg-blue-100'
+                    }`}
+                    title={template.description}
+                  >
+                    <span>{template.icon}</span>
+                    <span>{template.name}</span>
+                  </button>
+                  {/* 用户模板编辑按钮 */}
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); handleEditTemplate(template); }}
+                    className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-blue-500 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                    title="编辑模板"
+                  >
+                    ✎
+                  </button>
+                  {/* 用户模板删除按钮 */}
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); handleDeleteTemplate(template.id); }}
+                    className="absolute -top-1 -left-1 w-5 h-5 rounded-full bg-red-500 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                    title="删除模板"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              {/* 新建模板按钮 */}
+              <button
+                type="button"
+                onClick={handleCreateTemplate}
+                className="px-3 py-1.5 rounded-lg text-sm font-medium transition-all bg-white border border-dashed border-slate-400 text-slate-600 hover:border-emerald-400 hover:bg-emerald-50 hover:text-emerald-700 flex items-center gap-1.5"
+                title="将当前参数保存为新模板"
               >
-                <option value="monthly_demand_max">monthly_demand_max</option>
-                <option value="transformer_capacity">transformer_capacity</option>
-              </select>
-              <div className="text-[11px] text-slate-500 mt-0.5">
-                决定需量上限的计算方式，会影响尖峰削峰空间与收益测算。
-              </div>
-            </label>
-            <label className="flex flex-col gap-1">
-              <span>能量公式</span>
-              <select
-                className="border rounded px-2 py-1"
-                value={params.energy_formula}
-                onChange={e => setParams(p => ({ ...p, energy_formula: e.target.value as any }))}
+                <span>➕</span>
+                <span>保存为模板</span>
+              </button>
+              {/* 自定义按钮 */}
+              <button
+                type="button"
+                onClick={() => setActiveTemplateId(null)}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                  activeTemplateId === null
+                    ? 'bg-slate-600 text-white shadow-md'
+                    : 'bg-white border border-slate-300 text-slate-700 hover:border-slate-400'
+                }`}
               >
-                <option value="physics">physics</option>
-                <option value="sample">sample</option>
-              </select>
-              <div className="text-[11px] text-slate-500 mt-0.5">
-                physics 为物理模型精算，sample 为样本法近似，建议优先使用 physics。
+                🔧 自定义
+              </button>
+            </div>
+            {activeTemplateId && allTemplates.find(t => t.id === activeTemplateId) && (
+              <div className="mt-2 text-xs text-slate-600 bg-slate-100 rounded px-2 py-1.5">
+                <span className="font-medium">排程建议：</span>
+                {allTemplates.find(t => t.id === activeTemplateId)?.scheduleHint}
               </div>
-            </label>
+            )}
           </div>
 
-          {/* 反推容量：按目标全年等效循环数搜索（可选，可折叠） */}
-          <details className="rounded-lg border border-dashed border-emerald-300 bg-emerald-50/60 px-3 py-2 text-xs md:text-sm">
-            <summary className="cursor-pointer text-xs md:text-sm text-slate-700 select-none">
-              按目标全年合计等效循环数反推容量（可选）
-            </summary>
-            <div className="mt-2 space-y-2">
-              <div className="flex justify-end mb-1">
-                <button
-                  type="button"
-                  className="px-2 py-1 rounded bg-emerald-600 text-white text-xs disabled:opacity-60"
-                  onClick={handleSolveCapacityByTargetCycles}
-                  disabled={loading}
-                >
-                  按目标值反推容量
-                </button>
+          {/* 模板编辑对话框 */}
+          {templateEditVisible && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+              <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+                <div className="px-4 py-3 border-b flex items-center justify-between">
+                  <h3 className="font-semibold text-slate-800">
+                    {editingTemplate
+                      ? STORAGE_PARAMS_TEMPLATES.some(t => t.id === editingTemplate.id)
+                        ? `基于"${editingTemplate.name}"创建新模板`
+                        : `编辑模板: ${editingTemplate.name}`
+                      : '创建新模板'
+                    }
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setTemplateEditVisible(false)}
+                    className="text-slate-400 hover:text-slate-600 text-xl"
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="p-4 space-y-4">
+                  <div className="grid grid-cols-4 gap-3">
+                    <label className="col-span-1 flex flex-col gap-1">
+                      <span className="text-sm text-slate-700">图标</span>
+                      <input
+                        type="text"
+                        value={templateForm.icon}
+                        onChange={e => setTemplateForm(f => ({ ...f, icon: e.target.value }))}
+                        className="border rounded px-2 py-1.5 text-center text-lg"
+                        maxLength={2}
+                      />
+                    </label>
+                    <label className="col-span-3 flex flex-col gap-1">
+                      <span className="text-sm text-slate-700">模板名称 *</span>
+                      <input
+                        type="text"
+                        value={templateForm.name}
+                        onChange={e => setTemplateForm(f => ({ ...f, name: e.target.value }))}
+                        className="border rounded px-2 py-1.5"
+                        placeholder="输入模板名称"
+                      />
+                    </label>
+                  </div>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-sm text-slate-700">描述</span>
+                    <input
+                      type="text"
+                      value={templateForm.description}
+                      onChange={e => setTemplateForm(f => ({ ...f, description: e.target.value }))}
+                      className="border rounded px-2 py-1.5"
+                      placeholder="简要描述模板用途"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-sm text-slate-700">排程建议</span>
+                    <input
+                      type="text"
+                      value={templateForm.scheduleHint}
+                      onChange={e => setTemplateForm(f => ({ ...f, scheduleHint: e.target.value }))}
+                      className="border rounded px-2 py-1.5"
+                      placeholder="建议的充放电时段安排"
+                    />
+                  </label>
+                  <div className="bg-slate-50 rounded-lg p-3">
+                    <div className="text-xs font-medium text-slate-700 mb-2">将保存的参数（使用当前配置）：</div>
+                    <div className="grid grid-cols-3 gap-2 text-xs text-slate-600">
+                      <div>倍率: {params.c_rate}C</div>
+                      <div>效率: {(params.single_side_efficiency * 100).toFixed(0)}%</div>
+                      <div>DOD: {(params.depth_of_discharge * 100).toFixed(0)}%</div>
+                      <div>SOC: {(params.soc_min * 100).toFixed(0)}%~{(params.soc_max * 100).toFixed(0)}%</div>
+                      <div>合并: {params.merge_threshold_minutes}分</div>
+                      <div>公式: {params.energy_formula}</div>
+                    </div>
+                  </div>
+                </div>
+                <div className="px-4 py-3 border-t flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTemplateEditVisible(false)}
+                    className="px-4 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50"
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveTemplate}
+                    className="px-4 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-700"
+                  >
+                    保存模板
+                  </button>
+                </div>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            </div>
+          )}
+
+          {/* 左右双栏布局：基础配置 | 高级配置 */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* 左栏：基础配置 */}
+            <div className="border border-slate-200 rounded-lg bg-white overflow-hidden">
+              <div className="bg-slate-100 px-3 py-2 text-sm font-medium text-slate-700 border-b flex items-center gap-2">
+                <span>⚙️</span>
+                <span>基础配置</span>
+              </div>
+              <div className="p-3 space-y-3">
                 <label className="flex flex-col gap-1">
-                  <span>目标全年合计等效循环数</span>
-                  <input
-                    className="border rounded px-2 py-1 w-full"
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={targetYearEqCyclesInput}
-                    onChange={e => setTargetYearEqCyclesInput(e.target.value)}
-                    placeholder="例如 300"
-                  />
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span>起始容量</span>
+                  <span className="text-slate-700">容量</span>
                   <div className="flex items-center gap-1">
                     <input
-                      className="border rounded px-2 py-1 w-full"
+                      className="border rounded px-2 py-1.5 flex-1 text-sm"
+                      type="number"
+                      step="1"
+                      min="1"
+                      value={params.capacity_kwh}
+                      onChange={e => setParams(p => ({ ...p, capacity_kwh: Number(e.target.value) }))}
+                    />
+                    <span className="text-xs text-slate-500 w-10">kWh</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    储能额定容量，用于计算可参与调度的能量规模。
+                  </div>
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-slate-700">充电余量</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        className="border rounded px-2 py-1.5 flex-1 text-sm"
+                        type="number"
+                        step="1"
+                        min="0"
+                        value={params.reserve_charge_kw}
+                        onChange={e => setParams(p => ({ ...p, reserve_charge_kw: Number(e.target.value) }))}
+                      />
+                      <span className="text-xs text-slate-500 w-6">kW</span>
+                    </div>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-slate-700">放电余量</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        className="border rounded px-2 py-1.5 flex-1 text-sm"
+                        type="number"
+                        step="1"
+                        min="0"
+                        value={params.reserve_discharge_kw}
+                        onChange={e => setParams(p => ({ ...p, reserve_discharge_kw: Number(e.target.value) }))}
+                      />
+                      <span className="text-xs text-slate-500 w-6">kW</span>
+                    </div>
+                  </label>
+                </div>
+                <label className="flex flex-col gap-1">
+                  <span className="text-slate-700">计费口径</span>
+                  <select
+                    className="border rounded px-2 py-1.5 text-sm"
+                    value={params.metering_mode}
+                    onChange={e => handleTemplateParamChange('metering_mode', e.target.value as any)}
+                  >
+                    <option value="monthly_demand_max">月需量峰值</option>
+                    <option value="transformer_capacity">变压器容量</option>
+                  </select>
+                  <div className="text-[11px] text-slate-500">
+                    决定需量上限的计算方式，会影响尖峰削峰空间与收益测算。
+                  </div>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-slate-700">能量公式</span>
+                  <select
+                    className="border rounded px-2 py-1.5 text-sm"
+                    value={params.energy_formula}
+                    onChange={e => handleTemplateParamChange('energy_formula', e.target.value as any)}
+                  >
+                    <option value="physics">物理模型 (physics)</option>
+                    <option value="sample">样本法 (sample)</option>
+                  </select>
+                  <div className="text-[11px] text-slate-500">
+                    physics 为物理模型精算，sample 为样本法近似。
+                  </div>
+                </label>
+                {params.metering_mode === 'transformer_capacity' && (
+                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-100">
+                    <label className="flex flex-col gap-1">
+                      <span className="text-slate-700">变压器容量</span>
+                      <div className="flex items-center gap-1">
+                        <input
+                          className="border rounded px-2 py-1.5 flex-1 text-sm"
+                          type="number"
+                          step="1"
+                          min="1"
+                          value={params.transformer_capacity_kva}
+                          onChange={e => setParams(p => ({ ...p, transformer_capacity_kva: Number(e.target.value) }))}
+                        />
+                        <span className="text-xs text-slate-500 w-8">kVA</span>
+                      </div>
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-slate-700">功率因数</span>
+                      <div className="flex items-center gap-1">
+                        <input
+                          className="border rounded px-2 py-1.5 flex-1 text-sm"
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          max="1"
+                          value={params.transformer_power_factor}
+                          onChange={e => setParams(p => ({ ...p, transformer_power_factor: Number(e.target.value) }))}
+                        />
+                        <span className="text-xs text-slate-500 w-8">cosφ</span>
+                      </div>
+                    </label>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* 右栏：高级配置 */}
+            <div className="border border-slate-200 rounded-lg bg-white overflow-hidden">
+              <div className="bg-slate-100 px-3 py-2 text-sm font-medium text-slate-700 border-b flex items-center gap-2">
+                <span>🔧</span>
+                <span>高级配置</span>
+                <span className="text-[11px] font-normal text-slate-500 ml-auto">影响循环次数与效率计算</span>
+              </div>
+              <div className="p-3 space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-slate-700">倍率</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        className="border rounded px-2 py-1.5 flex-1 text-sm"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={params.c_rate}
+                        onChange={e => handleTemplateParamChange('c_rate', Number(e.target.value))}
+                      />
+                      <span className="text-xs text-slate-500 w-6">C</span>
+                    </div>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-slate-700">单边效率</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        className="border rounded px-2 py-1.5 flex-1 text-sm"
+                        type="number"
+                        step="0.001"
+                        min="0"
+                        max="1"
+                        value={params.single_side_efficiency}
+                        onChange={e => handleTemplateParamChange('single_side_efficiency', Number(e.target.value))}
+                      />
+                      <span className="text-xs text-slate-500 w-6">η</span>
+                    </div>
+                  </label>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-slate-700">SOC 下限</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        className="border rounded px-2 py-1.5 flex-1 text-sm"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="1"
+                        value={params.soc_min}
+                        onChange={e => handleTemplateParamChange('soc_min', Number(e.target.value))}
+                      />
+                      <span className="text-xs text-slate-500 w-6">%</span>
+                    </div>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-slate-700">SOC 上限</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        className="border rounded px-2 py-1.5 flex-1 text-sm"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="1"
+                        value={params.soc_max}
+                        onChange={e => handleTemplateParamChange('soc_max', Number(e.target.value))}
+                      />
+                      <span className="text-xs text-slate-500 w-6">%</span>
+                    </div>
+                  </label>
+                </div>
+                <label className="flex flex-col gap-1">
+                  <span className="text-slate-700">DOD (放电深度)</span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      className="border rounded px-2 py-1.5 flex-1 text-sm"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      max="1"
+                      value={params.depth_of_discharge}
+                      onChange={e => handleTemplateParamChange('depth_of_discharge', Number(e.target.value))}
+                    />
+                    <span className="text-xs text-slate-500 w-10">比例</span>
+                  </div>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-slate-700">合并阈值</span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      className="border rounded px-2 py-1.5 flex-1 text-sm"
+                      type="number"
+                      step="1"
+                      min="0"
+                      value={params.merge_threshold_minutes}
+                      onChange={e => handleTemplateParamChange('merge_threshold_minutes', Number(e.target.value))}
+                    />
+                    <span className="text-xs text-slate-500 w-10">分钟</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    相邻充/放时段合并的时间阈值
+                  </div>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          {/* 测算模式选择标签 */}
+          <div className="border border-slate-200 rounded-lg bg-white overflow-hidden">
+            <div className="flex border-b">
+              <button
+                type="button"
+                onClick={() => setTestMode('single')}
+                className={`flex-1 px-4 py-2.5 text-sm font-medium transition-all flex items-center justify-center gap-2 ${
+                  testMode === 'single'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                <span>🎯</span>
+                <span>单次测算</span>
+                {testMode === 'single' && <span className="text-blue-200">●</span>}
+              </button>
+              <button
+                type="button"
+                onClick={() => setTestMode('batch')}
+                className={`flex-1 px-4 py-2.5 text-sm font-medium transition-all flex items-center justify-center gap-2 ${
+                  testMode === 'batch'
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                <span>📊</span>
+                <span>批量容量对比</span>
+                {testMode === 'batch' && batchResults.length > 0 && batchResults.some(b => b.status === 'done') && (
+                  <span className="px-1.5 py-0.5 bg-emerald-400 text-white rounded-full text-xs">
+                    {batchResults.filter(b => b.status === 'done').length}
+                  </span>
+                )}
+              </button>
+            </div>
+
+            {/* 单次测算模式 */}
+            {testMode === 'single' && (
+              <div className="p-4 space-y-3">
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-slate-600">当前容量:</span>
+                    <span className="font-mono text-lg font-semibold text-blue-700">{params.capacity_kwh.toLocaleString()}</span>
+                    <span className="text-sm text-slate-500">kWh</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-sm text-slate-500">
+                    <span>功率 = {(params.capacity_kwh * params.c_rate).toLocaleString()} kW</span>
+                    <span className="text-slate-300">|</span>
+                    <span>效率 = {(params.single_side_efficiency * 100).toFixed(0)}%</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleUpload}
+                    className="px-6 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium transition-colors flex items-center gap-2 disabled:opacity-60"
+                    disabled={loading}
+                  >
+                    {loading ? (
+                      <>
+                        <span className="animate-spin">⏳</span>
+                        计算中...
+                      </>
+                    ) : (
+                      <>
+                        <span>▶</span>
+                        开始测算
+                      </>
+                    )}
+                  </button>
+                  <span className="text-xs text-slate-500">
+                    使用当前配置的容量 {params.capacity_kwh} kWh 进行单次完整测算
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* 批量容量对比模式 */}
+            {testMode === 'batch' && (
+              <div className="p-4 space-y-4">
+                {/* 配置状态摘要 */}
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs font-medium text-slate-700">配置状态检查</span>
+                    {activeTemplateId && (
+                      <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded text-[10px]">
+                        {STORAGE_PARAMS_TEMPLATES.find(t => t.id === activeTemplateId)?.name}
+                      </span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 text-xs">
+                    <div className="flex items-center gap-1">
+                      <span className={`${(fileName || (useAnalyzedData && externalCleanedData?.length)) ? 'text-green-600' : 'text-red-500'}`}>
+                        {(fileName || (useAnalyzedData && externalCleanedData?.length)) ? '✓' : '✗'}
+                      </span>
+                      <span className="text-slate-600">数据源</span>
+                      <span className="text-slate-400 truncate max-w-[100px]" title={fileName || '负荷分析数据'}>
+                        {fileName ? fileName.slice(0, 15) : (useAnalyzedData && externalCleanedData?.length ? '负荷分析' : '未选择')}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span className="text-green-600">✓</span>
+                      <span className="text-slate-600">倍率</span>
+                      <span className="text-slate-700 font-mono">{params.c_rate}C</span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      {(() => {
+                        const hasDischarge = Array.isArray(scheduleData.monthlySchedule)
+                          && scheduleData.monthlySchedule.some((monthRow: any[]) =>
+                            Array.isArray(monthRow) && monthRow.some(cell => cell?.op === '放'));
+                        return (
+                          <>
+                            <span className={hasDischarge ? 'text-green-600' : 'text-red-500'}>{hasDischarge ? '✓' : '✗'}</span>
+                            <span className="text-slate-600">放电时段</span>
+                            <span className="text-slate-400">{hasDischarge ? '已配置' : '必须设置'}</span>
+                          </>
+                        );
+                      })()}
+                    </div>
+                    <div className="flex items-center gap-1">
+                      {(() => {
+                        const hasPrice = Array.isArray(scheduleData.prices)
+                          && scheduleData.prices.some(mp => mp && Object.values(mp).some(v => v != null));
+                        return (
+                          <>
+                            <span className={hasPrice ? 'text-green-600' : 'text-red-500'}>{hasPrice ? '✓' : '✗'}</span>
+                            <span className="text-slate-600">电价</span>
+                            <span className="text-slate-400">{hasPrice ? '已配置' : '必须设置'}</span>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 批量参数设置 */}
+                <div className="flex flex-wrap items-end gap-x-4 gap-y-2 bg-slate-50 rounded-lg px-3 py-2.5 border border-slate-200">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-600 whitespace-nowrap">容量范围:</span>
+                    <input
+                      className="border rounded px-2 py-1 w-20 text-sm"
                       type="number"
                       min="1"
                       step="1"
                       value={solveStartCapacityKwh}
                       onChange={e => setSolveStartCapacityKwh(Number(e.target.value) || 0)}
                     />
-                    <span className="text-xs text-slate-500 pr-1">kWh</span>
+                    <span className="text-xs text-slate-500">~</span>
+                    <span className="text-xs text-slate-600 font-mono">
+                      {(solveStartCapacityKwh + (solveSteps - 1) * solveStepCapacityKwh).toLocaleString()} kWh
+                    </span>
                   </div>
-                  <div className="text-[11px] text-slate-500 mt-0.5">
-                    默认取当前容量附近区间起点，可按需调整。
-                  </div>
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span>容量步长</span>
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-600 whitespace-nowrap">步长:</span>
                     <input
-                      className="border rounded px-2 py-1 w-full"
+                      className="border rounded px-2 py-1 w-20 text-sm"
                       type="number"
                       min="1"
                       step="1"
                       value={solveStepCapacityKwh}
                       onChange={e => setSolveStepCapacityKwh(Number(e.target.value) || 0)}
                     />
-                    <span className="text-xs text-slate-500 pr-1">kWh</span>
+                    <span className="text-xs text-slate-500">kWh</span>
                   </div>
-                  <div className="text-[11px] text-slate-500 mt-0.5">
-                    将按起始容量起步，每步增加此容量，预计算 {solveSteps > 0 ? solveSteps : SOLVE_CAPACITY_STEPS} 个容量点。
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-600 whitespace-nowrap">档数:</span>
+                    <input
+                      className="border rounded px-2 py-1 w-16 text-sm"
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={solveSteps}
+                      onChange={e => setSolveSteps(Number(e.target.value) || 0)}
+                    />
                   </div>
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span>预计算步数</span>
-                  <input
-                    className="border rounded px-2 py-1 w-full"
-                    type="number"
-                    min="1"
-                    step="1"
-                    value={solveSteps}
-                    onChange={e => setSolveSteps(Number(e.target.value) || 0)}
-                  />
-                </label>
-              </div>
-              <div className="text-[11px] text-slate-500">
-                该功能仅用于反推推荐容量，不会覆盖“开始测算”按钮的单次测算逻辑。
-              </div>
-            </div>
-          </details>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-600 whitespace-nowrap">目标循环:</span>
+                    <input
+                      className="border rounded px-2 py-1 w-20 text-sm"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={targetYearEqCyclesInput}
+                      onChange={e => setTargetYearEqCyclesInput(e.target.value)}
+                      placeholder="640"
+                    />
+                    <span className="text-xs text-slate-500">次/年</span>
+                  </div>
+                </div>
 
-          {/* 高级设置：倍率 / 效率 / DOD / 合并阈值等 */}
-          <details className="rounded-lg border border-dashed border-slate-300 bg-slate-50/70 px-3 py-2">
-            <summary className="cursor-pointer text-xs md:text-sm text-slate-700 select-none">
-              高级设置（倍率、效率、DOD、SOC、合并阈值等）
-            </summary>
-            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-3">
-              <label className="flex flex-col gap-1">
-                <span>倍率</span>
-                <div className="flex items-center gap-1">
-                  <input
-                    className="border rounded px-2 py-1 flex-1"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={params.c_rate}
-                    onChange={e => setParams(p => ({ ...p, c_rate: Number(e.target.value) }))}
-                  />
-                  <span className="text-xs text-slate-500 pr-1">C</span>
+                {/* 功率模式选择 */}
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2 bg-blue-50 rounded-lg px-3 py-2 border border-blue-200">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-blue-700 font-medium whitespace-nowrap">⚡ 功率模式:</span>
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="powerModeBatch"
+                        value="c_rate"
+                        checked={powerMode === 'c_rate'}
+                        onChange={() => setPowerMode('c_rate')}
+                        className="accent-blue-600"
+                      />
+                      <span className="text-xs text-slate-700">倍率联动</span>
+                    </label>
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="powerModeBatch"
+                        value="fixed"
+                        checked={powerMode === 'fixed'}
+                        onChange={() => setPowerMode('fixed')}
+                        className="accent-blue-600"
+                      />
+                      <span className="text-xs text-slate-700">固定功率</span>
+                    </label>
+                  </div>
+                  {powerMode === 'c_rate' ? (
+                    <div className="flex items-center gap-2 text-xs text-blue-600">
+                      <span>倍率 {params.c_rate}C →</span>
+                      <span className="font-mono bg-blue-100 px-1.5 py-0.5 rounded">
+                        {(solveStartCapacityKwh * params.c_rate).toLocaleString()} ~ {((solveStartCapacityKwh + (solveSteps - 1) * solveStepCapacityKwh) * params.c_rate).toLocaleString()} kW
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 text-xs text-slate-600">
+                      <span>充电余量 {params.reserve_charge_kw} kW / 放电余量 {params.reserve_discharge_kw} kW</span>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2 ml-auto">
+                    <button
+                      type="button"
+                      className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium disabled:opacity-60 transition-colors flex items-center gap-1.5"
+                      onClick={handleBatchCapacityCompute}
+                      disabled={loading || isBatchComputing}
+                    >
+                      {isBatchComputing ? (
+                        <>
+                          <span className="animate-spin">⏳</span>
+                          计算中...
+                        </>
+                      ) : (
+                        <>
+                          <span>▶</span>
+                          开始批量计算
+                        </>
+                      )}
+                    </button>
+                    {isBatchComputing && batchProgress && (
+                      <div className="flex items-center gap-1">
+                        <UploadProgressRing
+                          progress={Math.round((batchProgress.current / batchProgress.total) * 100)}
+                          status="computing"
+                          size={28}
+                          stroke={3}
+                        />
+                        <span className="text-xs text-slate-600 font-mono">
+                          {batchProgress.current}/{batchProgress.total}
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </label>
-              <label className="flex flex-col gap-1">
-                <span>单边效率</span>
-                <div className="flex items-center gap-1">
-                  <input
-                    className="border rounded px-2 py-1 flex-1"
-                    type="number"
-                    step="0.001"
-                    min="0"
-                    max="1"
-                    value={params.single_side_efficiency}
-                    onChange={e => setParams(p => ({ ...p, single_side_efficiency: Number(e.target.value) }))}
-                  />
-                  <span className="text-xs text-slate-500 pr-1">η</span>
-                </div>
-              </label>
-              <label className="flex flex-col gap-1">
-                <span>DOD</span>
-                <div className="flex items-center gap-1">
-                  <input
-                    className="border rounded px-2 py-1 flex-1"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    max="1"
-                    value={params.depth_of_discharge}
-                    onChange={e => setParams(p => ({ ...p, depth_of_discharge: Number(e.target.value) }))}
-                  />
-                  <span className="text-xs text-slate-500 pr-1">比例</span>
-                </div>
-              </label>
-              <label className="flex flex-col gap-1">
-                <span>SOC 下限</span>
-                <div className="flex items-center gap-1">
-                  <input
-                    className="border rounded px-2 py-1 flex-1"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    max="1"
-                    value={params.soc_min}
-                    onChange={e => setParams(p => ({ ...p, soc_min: Number(e.target.value) }))}
-                  />
-                  <span className="text-xs text-slate-500 pr-1">比例</span>
-                </div>
-              </label>
-              <label className="flex flex-col gap-1">
-                <span>SOC 上限</span>
-                <div className="flex items-center gap-1">
-                  <input
-                    className="border rounded px-2 py-1 flex-1"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    max="1"
-                    value={params.soc_max}
-                    onChange={e => setParams(p => ({ ...p, soc_max: Number(e.target.value) }))}
-                  />
-                  <span className="text-xs text-slate-500 pr-1">比例</span>
-                </div>
-              </label>
-              <label className="flex flex-col gap-1">
-                <span>合并阈值</span>
-                <div className="flex items-center gap-1">
-                  <input
-                    className="border rounded px-2 py-1 flex-1"
-                    type="number"
-                    step="1"
-                    min="0"
-                    value={params.merge_threshold_minutes}
-                    onChange={e => setParams(p => ({ ...p, merge_threshold_minutes: Number(e.target.value) }))}
-                  />
-                  <span className="text-xs text-slate-500 pr-1">分钟</span>
-                </div>
-              </label>
 
-              {params.metering_mode === 'transformer_capacity' && (
-                <>
-                  <label className="flex flex-col gap-1">
-                    <span>变压器容量</span>
-                    <div className="flex items-center gap-1">
-                      <input
-                        className="border rounded px-2 py-1 flex-1"
-                        type="number"
-                        step="1"
-                        min="1"
-                        value={params.transformer_capacity_kva}
-                        onChange={e => setParams(p => ({ ...p, transformer_capacity_kva: Number(e.target.value) }))}
-                      />
-                      <span className="text-xs text-slate-500 pr-1">kVA</span>
+                {/* 批量结果：双列布局（表格 + 趋势图） */}
+                {batchResults.length > 0 && (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    {/* 左侧：对比表格 */}
+                    <div className="border border-slate-200 rounded-lg overflow-hidden bg-white">
+                      <div className="bg-slate-100 px-3 py-2 text-xs font-medium text-slate-700 border-b">
+                        容量对比表
+                      </div>
+                      <div className="overflow-x-auto max-h-[320px] overflow-y-auto">
+                        <table className="min-w-full text-xs border-collapse">
+                          <thead className="sticky top-0 bg-slate-50 z-10">
+                            <tr>
+                              <th className="border-b px-2 py-1.5 text-center w-8"></th>
+                              <th className="border-b px-2 py-1.5 text-right">容量</th>
+                              <th className="border-b px-2 py-1.5 text-right">循环数</th>
+                              <th className="border-b px-2 py-1.5 text-right">首年收益</th>
+                              <th className="border-b px-2 py-1.5 text-right">与目标差距</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {batchResults.map((item, idx) => {
+                              const isClosest = idx === closestBatchIdx;
+                              const isSelected = idx === selectedBatchIdx;
+                              const targetVal = parseFloat(targetYearEqCyclesInput) || 0;
+                              const diff = item.status === 'done' && targetVal > 0
+                                ? item.yearEqCycles - targetVal
+                                : null;
+                              const diffPct = diff !== null && targetVal > 0
+                                ? (diff / targetVal) * 100
+                                : null;
+                              return (
+                                <tr
+                                  key={idx}
+                                  className={`cursor-pointer transition-all ${
+                                    isSelected 
+                                      ? 'bg-emerald-100 border-l-4 border-l-emerald-500' 
+                                      : isClosest 
+                                        ? 'bg-amber-50 border-l-4 border-l-amber-400' 
+                                        : 'hover:bg-slate-50 border-l-4 border-l-transparent'
+                                  }`}
+                                  onClick={() => item.status === 'done' && handleSelectBatchRow(idx)}
+                                >
+                                  <td className="px-2 py-1.5 text-center">
+                                    {item.status === 'done' ? (
+                                      <input
+                                        type="radio"
+                                        name="batchCapacityNew"
+                                        checked={isSelected}
+                                        className="accent-emerald-600"
+                                        onChange={() => handleSelectBatchRow(idx)}
+                                      />
+                                    ) : item.status === 'computing' ? (
+                                      <span className="text-orange-500 animate-pulse">◌</span>
+                                    ) : item.status === 'error' ? (
+                                      <span className="text-red-500" title={item.errorMsg}>✗</span>
+                                    ) : (
+                                      <span className="text-slate-300">○</span>
+                                    )}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-right font-mono text-slate-700">
+                                    {item.capacityKwh.toLocaleString()}
+                                    <span className="text-slate-400 text-[10px] ml-0.5">kWh</span>
+                                  </td>
+                                  <td className="px-2 py-1.5 text-right font-mono">
+                                    {item.status === 'done' ? (
+                                      <span className={isClosest ? 'text-amber-700 font-semibold' : 'text-slate-700'}>
+                                        {item.yearEqCycles.toFixed(1)}
+                                      </span>
+                                    ) : item.status === 'computing' ? (
+                                      <span className="text-slate-400">...</span>
+                                    ) : (
+                                      <span className="text-slate-300">-</span>
+                                    )}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-right font-mono text-slate-700">
+                                    {item.status === 'done' ? (
+                                      <span>¥{(item.firstYearProfit / 10000).toFixed(2)}<span className="text-slate-400 text-[10px] ml-0.5">万</span></span>
+                                    ) : (
+                                      <span className="text-slate-300">-</span>
+                                    )}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-right font-mono text-xs">
+                                    {item.status === 'done' && diff !== null ? (
+                                      <span className={`${
+                                        isClosest 
+                                          ? 'inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium'
+                                          : diff > 0 ? 'text-emerald-600' : 'text-slate-500'
+                                      }`}>
+                                        {diff > 0 ? '+' : ''}{diff.toFixed(1)}
+                                        {diffPct !== null && (
+                                          <span className="text-[10px] opacity-70">
+                                            ({diffPct > 0 ? '+' : ''}{diffPct.toFixed(1)}%)
+                                          </span>
+                                        )}
+                                        {isClosest && <span className="ml-1">★</span>}
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-300">-</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
-                  </label>
-                  <label className="flex flex-col gap-1">
-                    <span>功率因数</span>
-                    <div className="flex items-center gap-1">
-                      <input
-                        className="border rounded px-2 py-1 flex-1"
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        max="1"
-                        value={params.transformer_power_factor}
-                        onChange={e => setParams(p => ({ ...p, transformer_power_factor: Number(e.target.value) }))}
-                      />
-                      <span className="text-xs text-slate-500 pr-1">cosφ</span>
+
+                    {/* 右侧：趋势图 */}
+                    <div className="border border-slate-200 rounded-lg overflow-hidden bg-white">
+                      <div className="bg-slate-100 px-3 py-2 text-xs font-medium text-slate-700 border-b flex items-center justify-between">
+                        <span>趋势图</span>
+                        <span className="text-[10px] text-slate-500 font-normal">
+                          点击图表上的点可选中对应容量
+                        </span>
+                      </div>
+                      <div className="p-2">
+                        <BatchCapacityChart
+                          data={batchResults}
+                          targetCycles={parseFloat(targetYearEqCyclesInput) || undefined}
+                          selectedCapacity={selectedBatchIdx !== null ? batchResults[selectedBatchIdx]?.capacityKwh : undefined}
+                          onSelectCapacity={(cap) => {
+                            const idx = batchResults.findIndex(b => b.capacityKwh === cap);
+                            if (idx >= 0 && batchResults[idx].status === 'done') {
+                              handleSelectBatchRow(idx);
+                            }
+                          }}
+                          height={280}
+                        />
+                      </div>
                     </div>
-                  </label>
-                </>
-              )}
-            </div>
-          </details>
+                  </div>
+                )}
+
+                {/* 推荐提示 */}
+                {batchResults.length > 0 && closestBatchIdx !== null && batchResults[closestBatchIdx]?.status === 'done' && (
+                  <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-sm">
+                    <span className="text-amber-500 text-lg">💡</span>
+                    <span className="text-amber-800">
+                      <strong>推荐容量：</strong>
+                      {batchResults[closestBatchIdx].capacityKwh.toLocaleString()} kWh
+                      （循环数 {batchResults[closestBatchIdx].yearEqCycles.toFixed(1)}，
+                      最接近目标 {targetYearEqCyclesInput}，
+                      首年收益 ¥{(batchResults[closestBatchIdx].firstYearProfit / 10000).toFixed(2)} 万）
+                    </span>
+                    <button
+                      type="button"
+                      className="ml-auto px-2 py-1 text-xs bg-amber-200 hover:bg-amber-300 text-amber-800 rounded transition-colors"
+                      onClick={() => handleSelectBatchRow(closestBatchIdx)}
+                    >
+                      查看详情
+                    </button>
+                  </div>
+                )}
+
+                {/* 选中容量的详细结果提示 */}
+                {selectedBatchIdx !== null && batchResults[selectedBatchIdx]?.status === 'done' && (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3">
+                    <div className="flex items-center gap-2 text-sm text-emerald-700">
+                      <span className="text-emerald-500">✓</span>
+                      <span className="font-medium">
+                        已选容量 {batchResults[selectedBatchIdx].capacityKwh.toLocaleString()} kWh
+                      </span>
+                      <span className="text-slate-500">
+                        （循环 {batchResults[selectedBatchIdx].yearEqCycles.toFixed(1)} 次 / 
+                        收益 ¥{(batchResults[selectedBatchIdx].firstYearProfit / 10000).toFixed(2)} 万）
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      详细结果已加载到下方结果区域，请向下滚动查看月度汇总、日度明细及图表。
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -2379,19 +3504,19 @@ export const StorageCyclesPage: React.FC<Props> = ({
                 基于日度循环结果按自然月折算
               </div>
             </div>
-            <div className="max-h-80 overflow-y-auto">
+            <div>
               <table className="min-w-full text-xs md:text-sm border-collapse">
-                <thead className="sticky top-0 bg-slate-50 z-10">
+                <thead className="bg-slate-50">
                   <tr className="border-b border-slate-200">
                     <th className="px-3 py-2 text-left font-medium text-slate-600">月份</th>
                     <th className="px-3 py-2 text-right font-medium text-slate-600">有效天数（天）</th>
-                    <th className="px-3 py-2 text-right font-medium text-slate-600 bg-slate-50">平均日循环数（次/天）</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-600 bg-slate-50">月均有效天日循环数（次/天）</th>
                     <th className="px-3 py-2 text-right font-medium text-slate-600 bg-slate-50">有效循环数（次）</th>
                     <th className="px-3 py-2 text-right font-medium text-slate-600">等效循环数（次）</th>
-                    <th className="px-3 py-2 text-right font-medium text-slate-600">第一次充电满充率（%）</th>
-                    <th className="px-3 py-2 text-right font-medium text-slate-600">第一次充电满放率（%）</th>
-                    <th className="px-3 py-2 text-right font-medium text-slate-600">第二次充电满充率（%）</th>
-                    <th className="px-3 py-2 text-right font-medium text-slate-600">第二次充电满放率（%）</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-600">第一次充电月均有效天次数（次/天）</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-600">第一次放电月均有效天次数（次/天）</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-600">第二次充电月均有效天次数（次/天）</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-600">第二次放电月均有效天次数（次/天）</th>
                     <th className="px-3 py-2 text-right font-medium text-slate-600">平均尖占比（%）</th>
                   </tr>
                 </thead>
@@ -2418,19 +3543,19 @@ export const StorageCyclesPage: React.FC<Props> = ({
                   const fChargeStr =
                     fChargePct == null
                       ? '-'
-                      : `${Number(fChargePct).toFixed(3)}%`;
+                      : Number(fChargePct).toFixed(3);
                   const fDischargeStr =
                     fDischargePct == null
                       ? '-'
-                      : `${Number(fDischargePct).toFixed(3)}%`;
+                      : Number(fDischargePct).toFixed(3);
                   const sChargeStr =
                     sChargePct == null
                       ? '-'
-                      : `${Number(sChargePct).toFixed(3)}%`;
+                      : Number(sChargePct).toFixed(3);
                   const sDischargeStr =
                     sDischargePct == null
                       ? '-'
-                      : `${Number(sDischargePct).toFixed(3)}%`;
+                      : Number(sDischargePct).toFixed(3);
                   const avgDailyStr =
                     avgDailyCycles == null || avgDailyCycles === 0
                       ? '-'
@@ -2496,18 +3621,17 @@ export const StorageCyclesPage: React.FC<Props> = ({
                       ? '-'
                       : Number(yearEquivalentCycles).toFixed(3)}
                   </td>
-                  {/* 目前年度满充/满放率不做汇总，保持为空 */}
                   <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
-                    {avgFirstChargeRate == null ? '-' : `${avgFirstChargeRate.toFixed(3)}%`}
+                    {avgFirstChargeRate == null ? '-' : avgFirstChargeRate.toFixed(3)}
                   </td>
                   <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
-                    {avgFirstDischargeRate == null ? '-' : `${avgFirstDischargeRate.toFixed(3)}%`}
+                    {avgFirstDischargeRate == null ? '-' : avgFirstDischargeRate.toFixed(3)}
                   </td>
                   <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
-                    {avgSecondChargeRate == null ? '-' : `${avgSecondChargeRate.toFixed(3)}%`}
+                    {avgSecondChargeRate == null ? '-' : avgSecondChargeRate.toFixed(3)}
                   </td>
                   <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
-                    {avgSecondDischargeRate == null ? '-' : `${avgSecondDischargeRate.toFixed(3)}%`}
+                    {avgSecondDischargeRate == null ? '-' : avgSecondDischargeRate.toFixed(3)}
                   </td>
                   <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
                     {avgTipRatio == null ? '-' : `${(avgTipRatio * 100).toFixed(1)}%`}
@@ -2668,3 +3792,4 @@ export const StorageCyclesPage: React.FC<Props> = ({
     </div>
   );
 };
+

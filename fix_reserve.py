@@ -1,64 +1,69 @@
-"""修复放电余量限制"""
 import re
 
-file_path = r'd:\Desktop\ai\1028负荷展示和tou配置\backend\services\cycles.py'
+# 读取文件
+with open('./components/StorageCyclesPage.tsx', 'rb') as f:
+    raw_bytes = f.read()
 
-with open(file_path, 'r', encoding='utf-8') as f:
-    content = f.read()
+content = raw_bytes.decode('utf-8')
 
-old_code = '''        # 禁止"余电上网"：不允许引入储能后的负荷变为负值
-        # 注意：这里是针对电网视角的总负荷（原始负荷 + 储能影响），与计费口径无关。
-        if load_kw > 0:
-            max_discharge = max(-p_grid_phys, -p_grid_sample, 0.0)
-            if max_discharge > 0:
-                allowed_discharge = load_kw  # 最多只能把负荷削到 0
-                if max_discharge > allowed_discharge + 1e-6:
-                    scale_dis = allowed_discharge / max_discharge if allowed_discharge > 0 else 0.0
-                    if scale_dis < 0:
-                        scale_dis = 0.0
-                    if scale_dis < 1.0:
-                        p_batt *= scale_dis
-                        e_in_phys *= scale_dis
-                        e_out_phys *= scale_dis
-                        e_in_sample *= scale_dis
-                        e_out_sample *= scale_dis
-                        p_grid_phys *= scale_dis
-                        p_grid_sample *= scale_dis'''
+# 找到函数开始行（第31行的注释）
+lines = content.split('\r\n')
 
-new_code = '''        # 放电余量限制：确保引入储能后的负荷不低于 reserve_discharge_kw
-        # 同时禁止"余电上网"（负荷不能为负）
-        # 注意：这里是针对电网视角的总负荷（原始负荷 + 储能影响）
-        if p_batt < 0:  # 仅在放电时检查
-            max_discharge = max(-p_grid_phys, -p_grid_sample, 0.0)
-            if max_discharge > 0:
-                # 放电后负荷的下限 = max(reserve_discharge_kw, 0)
-                min_load_after = max(reserve_dis, 0.0)
-                # 最大允许削减量 = 当前负荷 - 下限
-                allowed_discharge = max(load_kw - min_load_after, 0.0)
-                if max_discharge > allowed_discharge + 1e-6:
-                    scale_dis = allowed_discharge / max_discharge if allowed_discharge > 0 else 0.0
-                    if scale_dis < 0:
-                        scale_dis = 0.0
-                    if scale_dis < 1.0:
-                        p_batt *= scale_dis
-                        e_in_phys *= scale_dis
-                        e_out_phys *= scale_dis
-                        e_in_sample *= scale_dis
-                        e_out_sample *= scale_dis
-                        p_grid_phys *= scale_dis
-                        p_grid_sample *= scale_dis'''
+# 找函数起始行
+start_line = -1
+end_line = -1
 
-if old_code in content:
-    content = content.replace(old_code, new_code)
-    with open(file_path, 'w', encoding='utf-8') as f:
-        f.write(content)
-    print("✓ 修改成功！")
+for i, line in enumerate(lines):
+    if '基于后端返回的日度 cycles' in line and 'computeYearEquivalentCyclesFromDays' not in line:
+        start_line = i
+        print(f"Function comment at line {i+1}")
+    if start_line >= 0 and i > start_line:
+        # 找到函数结束的 };（独立的一行只有 };）
+        if line.strip() == '};' and i > start_line + 5:
+            end_line = i
+            print(f"Function ends at line {i+1}")
+            break
+
+if start_line >= 0 and end_line > start_line:
+    # 新代码（使用 CRLF）
+    new_code_lines = [
+        '// 基于后端返回的日度 cycles 计算"全年合计等效循环数"',
+        '// 修复：使用全年有效天数的日均循环数 × 365，避免整月无数据时漏算',
+        'const computeYearEquivalentCyclesFromDays = (',
+        "  days: BackendStorageCyclesResponse['days'] | undefined | null,",
+        '): number => {',
+        '  if (!days || !days.length) return 0;',
+        '  ',
+        '  const validDaySet = new Set<string>();',
+        '  let totalCycles = 0;',
+        '',
+        '  days.forEach(d => {',
+        '    if (!d?.date) return;',
+        '    const dateKey = String(d.date);',
+        '    const cyclesVal = Number(d.cycles ?? 0);',
+        '    if (cyclesVal > 0) {',
+        '      validDaySet.add(dateKey);',
+        '    }',
+        '    totalCycles += cyclesVal;',
+        '  });',
+        '',
+        '  const yearValidDays = validDaySet.size;',
+        '  ',
+        '  if (yearValidDays > 0) {',
+        '    return (totalCycles / yearValidDays) * 365;',
+        '  }',
+        '  return 0;',
+        '};',
+    ]
+    
+    # 替换行
+    new_lines = lines[:start_line] + new_code_lines + lines[end_line+1:]
+    new_content = '\r\n'.join(new_lines)
+    
+    with open('./components/StorageCyclesPage.tsx', 'wb') as f:
+        f.write(new_content.encode('utf-8'))
+    
+    print(f"Replaced lines {start_line+1} to {end_line+1} with new code")
+    print("Replacement successful!")
 else:
-    print("✗ 未找到匹配的代码块")
-    # 尝试查找相似的内容
-    if "禁止" in content and "余电上网" in content:
-        print("文件中存在相关关键词，但格式可能不同")
-        # 打印周围的内容
-        idx = content.find("禁止")
-        print(f"找到位置: {idx}")
-        print(repr(content[idx:idx+500]))
+    print(f"Could not find function boundaries: start={start_line}, end={end_line}")

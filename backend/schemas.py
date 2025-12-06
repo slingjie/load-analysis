@@ -115,6 +115,9 @@ class StorageCyclesDay(BaseModel):
         default=None,
         description="当日收益信息（可为空，表示未计算或无数据）",
     )
+    # 新增：有效性标记
+    is_valid: bool = Field(default=True, description="该天数据是否有效（有正负荷数据）")
+    point_count: int = Field(default=96, description="该天有效数据点数量（满为96个15分钟点）")
 
 
 class StorageCyclesMonth(BaseModel):
@@ -126,6 +129,8 @@ class StorageCyclesMonth(BaseModel):
         default=None,
         description="该月收益汇总信息（可为空）",
     )
+    # 新增：有效天数统计
+    valid_days: int = Field(default=0, description="该月有效天数（有正负荷数据的天数）")
 
 
 class StorageCyclesYear(BaseModel):
@@ -137,6 +142,8 @@ class StorageCyclesYear(BaseModel):
         default=None,
         description="全年收益汇总信息（可为空）",
     )
+    # 新增：全年有效天数统计
+    valid_days: int = Field(default=0, description="全年有效天数")
 
 
 class TipDischargePoint(BaseModel):

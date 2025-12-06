@@ -522,12 +522,24 @@ async def compute_storage_cycles(
     # 日 / 月 / 年 cycles + profit 映射
     days: List[StorageCyclesDay] = []
     month_map: Dict[str, float] = {}
+    month_valid_days: Dict[str, int] = {}  # 新增：月度有效天数统计
     year_set: set[int] = set()
+    total_valid_days = 0  # 新增：全年有效天数
+    
     for d in days_raw:
         date_str = str(d.get("date"))
         cycles_val = float(d.get("cycles", 0.0) or 0.0)
+        is_valid = bool(d.get("is_valid", True))
+        point_count = int(d.get("point_count", 96) or 96)
+        
         ym = date_str[:7]
         month_map[ym] = month_map.get(ym, 0.0) + cycles_val
+        
+        # 统计有效天数
+        if is_valid:
+            month_valid_days[ym] = month_valid_days.get(ym, 0) + 1
+            total_valid_days += 1
+        
         try:
             year_set.add(int(date_str[:4]))
         except Exception:
@@ -546,6 +558,8 @@ async def compute_storage_cycles(
                 date=date_str,
                 cycles=cycles_val,
                 profit=day_profit_obj,
+                is_valid=is_valid,
+                point_count=point_count,
             )
         )
 
@@ -564,6 +578,7 @@ async def compute_storage_cycles(
                 year_month=ym,
                 cycles=float(cyc),
                 profit=month_profit_obj,
+                valid_days=month_valid_days.get(ym, 0),  # 新增：月度有效天数
             )
         )
 
@@ -576,7 +591,12 @@ async def compute_storage_cycles(
             physics=StorageProfit(**profit_year["physics"]) if profit_year.get("physics") else None,
             sample=StorageProfit(**profit_year["sample"]) if profit_year.get("sample") else None,
         )
-    year_summary = StorageCyclesYear(year=year_val, cycles=float(total_cycles), profit=year_profit_obj)
+    year_summary = StorageCyclesYear(
+        year=year_val,
+        cycles=float(total_cycles),
+        profit=year_profit_obj,
+        valid_days=total_valid_days,  # 新增：全年有效天数
+    )
 
     qc = StorageQC(
         notes=(limit_info.get("notes", []) + extra_notes),
@@ -617,9 +637,9 @@ async def compute_storage_cycles(
                 win = str(row.get("window") or "").lower()
                 kind = str(row.get("kind") or "").lower()
                 if energy_formula == "physics":
-                    ratio = float(row.get("full_ratio_physics", 0.0) or 0.0)
+                    ratio = float(row.get("full_ratio_physics_step15", 0.0) or 0.0)
                 else:
-                    ratio = float(row.get("full_ratio_sample", 0.0) or 0.0)
+                    ratio = float(row.get("full_ratio_sample_step15", 0.0) or 0.0)
                 if ratio == 0.0:
                     continue
                 bucket = agg.setdefault(

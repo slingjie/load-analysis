@@ -147,18 +147,25 @@ export interface BackendStorageCyclesDay {
   date: string;    // YYYY-MM-DD
   cycles: number;
   profit?: BackendStorageProfitWithFormulas | null;
+  // 新增：有效性标记
+  is_valid?: boolean;   // 该天数据是否有效（有正负荷数据）
+  point_count?: number; // 该天有效数据点数量（满为96个15分钟点）
 }
 
 export interface BackendStorageCyclesMonth {
   year_month: string; // YYYY-MM
   cycles: number;
   profit?: BackendStorageProfitWithFormulas | null;
+  // 新增：有效天数统计
+  valid_days?: number; // 该月有效天数
 }
 
 export interface BackendStorageCyclesYear {
   year: number;  // 0 表示服务端未确定年份
   cycles: number;
   profit?: BackendStorageProfitWithFormulas | null;
+  // 新增：全年有效天数统计
+  valid_days?: number; // 全年有效天数
 }
 
 export interface BackendStorageCurvesPoint {
