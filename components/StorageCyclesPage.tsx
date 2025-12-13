@@ -86,6 +86,8 @@ interface Props {
     prices: MonthlyTouPrices;
   };
   externalCleanedData?: LoadDataPoint[] | null; // 来自“负荷分析”页的已上传点
+  restoredCyclesRun?: { payload: StorageParamsPayload; response: BackendStorageCyclesResponse } | null;
+  restoredVersion?: number;
   onNavigateProfit?: (date: string) => void;
   onLatestRunChange?: (payload: StorageParamsPayload, response: BackendStorageCyclesResponse) => void;
 }
@@ -93,6 +95,8 @@ interface Props {
 export const StorageCyclesPage: React.FC<Props> = ({
   scheduleData,
   externalCleanedData,
+  restoredCyclesRun,
+  restoredVersion,
   onNavigateProfit,
   onLatestRunChange,
 }) => {
@@ -117,6 +121,55 @@ export const StorageCyclesPage: React.FC<Props> = ({
   React.useEffect(() => {
     setUseAnalyzedData(!!(externalCleanedData && externalCleanedData.length > 0));
   }, [externalCleanedData]);
+
+  useEffect(() => {
+    if (!restoredVersion) return;
+    if (!restoredCyclesRun?.response || !restoredCyclesRun?.payload) return;
+    const storage = restoredCyclesRun.payload.storage;
+    setError(null);
+    setResult(restoredCyclesRun.response);
+    lastPayloadRef.current = restoredCyclesRun.payload;
+    lastFileRef.current = null;
+    setFileName('');
+    setUseAnalyzedData(true);
+    setCyclePhase('done');
+    setShowCycleRing(false);
+    setCycleProgressPct(0);
+
+    // 回填“基础配置”表单（params）与相关状态（如放电策略）
+    setParams((p) => ({
+      ...p,
+      capacity_kwh: Number.isFinite(Number(storage?.capacity_kwh)) ? Number(storage.capacity_kwh) : p.capacity_kwh,
+      c_rate: Number.isFinite(Number(storage?.c_rate)) ? Number(storage.c_rate) : p.c_rate,
+      single_side_efficiency: Number.isFinite(Number(storage?.single_side_efficiency)) ? Number(storage.single_side_efficiency) : p.single_side_efficiency,
+      depth_of_discharge: Number.isFinite(Number(storage?.depth_of_discharge)) ? Number(storage.depth_of_discharge) : p.depth_of_discharge,
+      soc_min: Number.isFinite(Number(storage?.soc_min)) ? Number(storage.soc_min) : p.soc_min,
+      soc_max: Number.isFinite(Number(storage?.soc_max)) ? Number(storage.soc_max) : p.soc_max,
+      reserve_charge_kw: Number.isFinite(Number(storage?.reserve_charge_kw)) ? Number(storage.reserve_charge_kw) : p.reserve_charge_kw,
+      reserve_discharge_kw: Number.isFinite(Number(storage?.reserve_discharge_kw)) ? Number(storage.reserve_discharge_kw) : p.reserve_discharge_kw,
+      metering_mode: (storage?.metering_mode === 'transformer_capacity' ? 'transformer_capacity' : 'monthly_demand_max') as any,
+      transformer_capacity_kva: Number.isFinite(Number(storage?.transformer_capacity_kva)) ? Number(storage.transformer_capacity_kva) : p.transformer_capacity_kva,
+      transformer_power_factor: Number.isFinite(Number(storage?.transformer_power_factor)) ? Number(storage.transformer_power_factor) : p.transformer_power_factor,
+      energy_formula: (storage?.energy_formula === 'sample' ? 'sample' : 'physics') as any,
+      merge_threshold_minutes: Number.isFinite(Number(storage?.merge_threshold_minutes)) ? Number(storage.merge_threshold_minutes) : p.merge_threshold_minutes,
+    }));
+
+    const ds = (storage as any)?.discharge_strategy;
+    if (ds === 'sequential' || ds === 'parallel' || ds === 'avg') {
+      setDischargeStrategy(ds);
+    }
+
+    const rc = Number(storage?.reserve_charge_kw ?? 0);
+    const rd = Number(storage?.reserve_discharge_kw ?? 0);
+    if ((Number.isFinite(rc) && rc > 0) || (Number.isFinite(rd) && rd > 0)) {
+      setPowerMode('fixed');
+    } else {
+      setPowerMode('c_rate');
+    }
+
+    // 恢复时默认切到“自定义”模板，避免模板自动覆盖快照参数
+    setActiveTemplateId(null);
+  }, [restoredVersion, restoredCyclesRun]);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<number>(0); // 保留给兼容但主要使用环形
   const [cyclePhase, setCyclePhase] = useState<'idle'|'uploading'|'computing'|'done'|'error'>('idle');
@@ -2107,9 +2160,14 @@ export const StorageCyclesPage: React.FC<Props> = ({
 
   useEffect(() => {
     let chart: any = null;
+    let onResize: (() => void) | null = null;
     loadECharts().then((echarts: any) => {
       if (!monthChartRef.current) return;
       chart = echarts.init(monthChartRef.current);
+      onResize = () => {
+        try { chart && chart.resize && chart.resize(); } catch { /* ignore */ }
+      };
+      window.addEventListener('resize', onResize);
       const cats =
         monthlyViewMode === 'aggregate'
           ? monthAxisLabels
@@ -2169,15 +2227,25 @@ export const StorageCyclesPage: React.FC<Props> = ({
         }],
         grid: { left: 40, right: 20, bottom: 40, top: 30 },
       });
+      setTimeout(() => { try { chart && chart.resize && chart.resize(); } catch { /* ignore */ } }, 0);
+      setTimeout(() => { try { chart && chart.resize && chart.resize(); } catch { /* ignore */ } }, 200);
     }).catch(() => {/* ignore */});
-    return () => { try { chart && chart.dispose && chart.dispose(); } catch { /* ignore */ } };
+    return () => {
+      try { if (onResize) window.removeEventListener('resize', onResize); } catch { /* ignore */ }
+      try { chart && chart.dispose && chart.dispose(); } catch { /* ignore */ }
+    };
   }, [aggregatedMonthlyCycles, monthAxisLabels, monthsData, monthlyViewMode]);
 
   useEffect(() => {
     let chart: any = null;
+    let onResize: (() => void) | null = null;
     loadECharts().then((echarts: any) => {
       if (!dayChartRef.current) return;
       chart = echarts.init(dayChartRef.current);
+      onResize = () => {
+        try { chart && chart.resize && chart.resize(); } catch { /* ignore */ }
+      };
+      window.addEventListener('resize', onResize);
       const days = daysData.filter(d => selectedMonth && d.date.startsWith(selectedMonth));
       const cats = days.map(d => d.date.slice(5));
       const vals = days.map(d => Number(d.cycles ?? 0));
@@ -2223,16 +2291,26 @@ export const StorageCyclesPage: React.FC<Props> = ({
         series: [{ name: '日度次数', type: 'line', data: vals, smooth: true, itemStyle: { color: '#34d399' } }],
         grid: { left: 40, right: 20, bottom: 40, top: 30 },
       });
+      setTimeout(() => { try { chart && chart.resize && chart.resize(); } catch { /* ignore */ } }, 0);
+      setTimeout(() => { try { chart && chart.resize && chart.resize(); } catch { /* ignore */ } }, 200);
     }).catch(() => {/* ignore */});
-    return () => { try { chart && chart.dispose && chart.dispose(); } catch { /* ignore */ } };
+    return () => {
+      try { if (onResize) window.removeEventListener('resize', onResize); } catch { /* ignore */ }
+      try { chart && chart.dispose && chart.dispose(); } catch { /* ignore */ }
+    };
   }, [daysData, selectedMonth]);
 
   // 全年每日充放次数热力图
   useEffect(() => {
     let chart: any = null;
+    let onResize: (() => void) | null = null;
     loadECharts().then((echarts: any) => {
       if (!heatmapChartRef.current) return;
       chart = echarts.init(heatmapChartRef.current);
+      onResize = () => {
+        try { chart && chart.resize && chart.resize(); } catch { /* ignore */ }
+      };
+      window.addEventListener('resize', onResize);
       const maxVal = heatmapData.reduce((max, d) => (d[2] > max ? d[2] : max), 0) || 1;
       chart.setOption({
         tooltip: {
@@ -2291,17 +2369,27 @@ export const StorageCyclesPage: React.FC<Props> = ({
           data: heatmapData,
         }],
       });
+      setTimeout(() => { try { chart && chart.resize && chart.resize(); } catch { /* ignore */ } }, 0);
+      setTimeout(() => { try { chart && chart.resize && chart.resize(); } catch { /* ignore */ } }, 200);
     }).catch(() => {/* ignore */});
-    return () => { try { chart && chart.dispose && chart.dispose(); } catch { /* ignore */ } };
+    return () => {
+      try { if (onResize) window.removeEventListener('resize', onResize); } catch { /* ignore */ }
+      try { chart && chart.dispose && chart.dispose(); } catch { /* ignore */ }
+    };
   }, [heatmapData, heatmapXAxisDays, heatmapYAxisMonths]);
 
   // 尖放电占比：日度折线
   useEffect(() => {
     let chart: any = null;
+    let onResize: (() => void) | null = null;
     loadECharts().then((echarts: any) => {
       if (!tipDayChartRef.current || !tipSummary?.dayStats) return;
       const data = tipSummary.dayStats;
       chart = echarts.init(tipDayChartRef.current);
+      onResize = () => {
+        try { chart && chart.resize && chart.resize(); } catch { /* ignore */ }
+      };
+      window.addEventListener('resize', onResize);
       chart.setOption({
         tooltip: {
           trigger: 'axis',
@@ -2335,8 +2423,13 @@ export const StorageCyclesPage: React.FC<Props> = ({
           areaStyle: { color: 'rgba(249,115,22,0.12)' },
         }],
       });
+      setTimeout(() => { try { chart && chart.resize && chart.resize(); } catch { /* ignore */ } }, 0);
+      setTimeout(() => { try { chart && chart.resize && chart.resize(); } catch { /* ignore */ } }, 200);
     }).catch(() => {/* ignore */});
-    return () => { try { chart && chart.dispose && chart.dispose(); } catch { /* ignore */ } };
+    return () => {
+      try { if (onResize) window.removeEventListener('resize', onResize); } catch { /* ignore */ }
+      try { chart && chart.dispose && chart.dispose(); } catch { /* ignore */ }
+    };
   }, [tipSummary?.dayStats, tipSummary?.ratio]);
 
   // 不再使用旧伪进度条逻辑，保留占位以防后续扩展

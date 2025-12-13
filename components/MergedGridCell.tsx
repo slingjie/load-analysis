@@ -7,13 +7,12 @@ interface MergedGridCellProps {
   startHour: number;
   endHour: number;
   span: number;
-  isSelected: boolean;
   isDimmed: boolean;
   onMouseDown: (event: React.MouseEvent<HTMLDivElement>) => void;
   onMouseMove: (event: React.MouseEvent<HTMLDivElement>) => void;
 }
 
-const MergedGridCellComponent: React.FC<MergedGridCellProps> = ({ cellData, startHour, endHour, span, isSelected, isDimmed, onMouseDown, onMouseMove }) => {
+const MergedGridCellComponent: React.FC<MergedGridCellProps> = ({ cellData, startHour, endHour, span, isDimmed, onMouseDown, onMouseMove }) => {
   const tierInfo = TIER_MAP.get(cellData.tou);
   const opLogicInfo = OPERATING_LOGIC_MAP.get(cellData.op);
 
@@ -32,7 +31,7 @@ const MergedGridCellComponent: React.FC<MergedGridCellProps> = ({ cellData, star
   return (
     <div
       style={{ gridColumn: `span ${span}` }}
-      className={`h-14 flex flex-col items-center justify-center font-sans font-semibold text-base cursor-pointer border-b border-r border-slate-300 transition-all duration-150 ${isSelected ? 'ring-2 ring-blue-500 ring-inset z-10' : ''} ${isDimmed ? 'opacity-30' : 'hover:scale-105 hover:shadow-lg hover:z-20'}`}
+      className={`h-14 flex flex-col items-center justify-center font-sans font-semibold text-base cursor-crosshair border-b border-r border-slate-300 transition-all duration-150 ${isDimmed ? 'opacity-30' : 'hover:shadow-lg hover:z-20'}`}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
     >

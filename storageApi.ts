@@ -9,7 +9,7 @@ import type {
   StorageEconomicsResult,
 } from './types';
 
-export const BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || '').replace(/\/$/, '') || 'http://localhost:8002';
+export const BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || '').replace(/\/$/, '') || 'http://localhost:8000';
 
 export interface StorageParamsPayload {
   storage: {

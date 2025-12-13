@@ -230,6 +230,119 @@ export const createProject = async (name: string): Promise<LocalProject> => {
   return project;
 };
 
+const upsertProject = async (project: LocalProject): Promise<void> => {
+  if (!(await canUseIdb())) {
+    await withLocalStorage((snap) => {
+      const idx = snap.projects.findIndex(p => p.id === project.id);
+      if (idx >= 0) {
+        snap.projects[idx] = project;
+      } else {
+        snap.projects.push(project);
+      }
+    });
+    return;
+  }
+
+  const db = await getDb();
+  await idbTx(db, STORE_PROJECTS, 'readwrite', async (tx) => {
+    const store = tx.objectStore(STORE_PROJECTS);
+    store.put(project);
+    return await Promise.resolve();
+  });
+};
+
+const upsertDatasetWithPoints = async (dataset: LocalDataset, points: StoredLoadPoint[]): Promise<void> => {
+  if (!(await canUseIdb())) {
+    await withLocalStorage((snap) => {
+      const idx = snap.datasets.findIndex(d => d.id === dataset.id);
+      if (idx >= 0) {
+        snap.datasets[idx] = dataset;
+      } else {
+        snap.datasets.push(dataset);
+      }
+      const pIdx = snap.dataset_points.findIndex(dp => dp.dataset_id === dataset.id);
+      const row: DatasetPointsRow = { dataset_id: dataset.id, points };
+      if (pIdx >= 0) {
+        snap.dataset_points[pIdx] = row;
+      } else {
+        snap.dataset_points.push(row);
+      }
+      const p = snap.projects.find(x => x.id === dataset.project_id);
+      if (p) p.updated_at = nowIso();
+    });
+    return;
+  }
+
+  const db = await getDb();
+  await idbTx(db, [STORE_DATASETS, STORE_DATASET_POINTS, STORE_PROJECTS], 'readwrite', async (tx) => {
+    tx.objectStore(STORE_DATASETS).put(dataset);
+    tx.objectStore(STORE_DATASET_POINTS).put({ dataset_id: dataset.id, points } satisfies DatasetPointsRow);
+    const pStore = tx.objectStore(STORE_PROJECTS);
+    const p = await idbRequest(pStore.get(dataset.project_id));
+    if (p) pStore.put({ ...(p as LocalProject), updated_at: nowIso() });
+    return await Promise.resolve();
+  });
+};
+
+const upsertRunWithArtifacts = async (run: LocalRun, artifacts: LocalRunArtifact[]): Promise<void> => {
+  if (!(await canUseIdb())) {
+    await withLocalStorage(async (snap) => {
+      const idx = snap.runs.findIndex(r => r.id === run.id);
+      if (idx >= 0) {
+        snap.runs[idx] = run;
+      } else {
+        snap.runs.push(run);
+      }
+
+      snap.run_artifacts = snap.run_artifacts.filter(a => a.run_id !== run.id);
+      for (const a of artifacts) {
+        const base64 = await blobToBase64(a.blob);
+        snap.run_artifacts.push({
+          artifact_id: `${run.id}:${a.kind}:${uuid()}`,
+          run_id: run.id,
+          kind: a.kind,
+          filename: a.filename,
+          mime: a.mime,
+          base64,
+          created_at: nowIso(),
+        });
+      }
+
+      const p = snap.projects.find(x => x.id === run.project_id);
+      if (p) p.updated_at = nowIso();
+    });
+    return;
+  }
+
+  const db = await getDb();
+  await idbTx(db, [STORE_RUNS, STORE_RUN_ARTIFACTS, STORE_PROJECTS], 'readwrite', async (tx) => {
+    tx.objectStore(STORE_RUNS).put(run);
+
+    const artifactsStore = tx.objectStore(STORE_RUN_ARTIFACTS);
+    const byRunId = artifactsStore.index('by_run_id');
+    const existing = await idbRequest(byRunId.getAll(run.id)) as RunArtifactRow[];
+    for (const row of existing) artifactsStore.delete(row.artifact_id);
+
+    for (const a of artifacts) {
+      const row: RunArtifactRow = {
+        artifact_id: `${run.id}:${a.kind}:${uuid()}`,
+        run_id: run.id,
+        kind: a.kind,
+        filename: a.filename,
+        mime: a.mime,
+        blob: a.blob,
+        created_at: nowIso(),
+      };
+      artifactsStore.add(row);
+    }
+
+    const pStore = tx.objectStore(STORE_PROJECTS);
+    const p = await idbRequest(pStore.get(run.project_id));
+    if (p) pStore.put({ ...(p as LocalProject), updated_at: nowIso() });
+    return await Promise.resolve();
+  });
+};
+
 export const renameProject = async (projectId: string, newName: string): Promise<void> => {
   const trimmed = newName.trim();
   if (!trimmed) throw new Error('项目名称不能为空');
@@ -696,6 +809,107 @@ export const exportProjectToJson = async (projectId: string): Promise<string> =>
     null,
     2,
   );
+};
+
+export const exportAllProjectsToJson = async (): Promise<string> => {
+  const projects = await listProjects();
+  const bundles: any[] = [];
+  for (const p of projects) {
+    const json = await exportProjectToJson(p.id);
+    try {
+      bundles.push(JSON.parse(json));
+    } catch {
+      // ignore broken single export
+    }
+  }
+  return JSON.stringify(
+    {
+      version: 2,
+      exported_at: nowIso(),
+      kind: "all-projects",
+      projects: bundles.map(b => b.project).filter(Boolean),
+      datasets: bundles.flatMap(b => Array.isArray(b.datasets) ? b.datasets : []),
+      runs: bundles.flatMap(b => Array.isArray(b.runs) ? b.runs : []),
+    },
+    null,
+    2,
+  );
+};
+
+export const importAllProjectsFromJson = async (jsonText: string): Promise<void> => {
+  const parsed = JSON.parse(jsonText);
+  const projects = Array.isArray(parsed?.projects) ? parsed.projects : [];
+  const datasets = Array.isArray(parsed?.datasets) ? parsed.datasets : [];
+  const runs = Array.isArray(parsed?.runs) ? parsed.runs : [];
+
+  for (const p of projects) {
+    const id = String(p?.id ?? '').trim();
+    const name = String(p?.name ?? '').trim();
+    if (!id || !name) continue;
+    const created_at = String(p?.created_at ?? nowIso());
+    const updated_at = String(p?.updated_at ?? created_at);
+    await upsertProject({ id, name, created_at, updated_at });
+  }
+
+  for (const d of datasets) {
+    const id = String(d?.id ?? '').trim();
+    const project_id = String(d?.project_id ?? '').trim();
+    const name = String(d?.name ?? '').trim();
+    if (!id || !project_id || !name) continue;
+    const points = Array.isArray(d?.points) ? d.points : [];
+    const normalizedPoints: StoredLoadPoint[] = points
+      .map((p: any) => ({ timestamp: String(p?.timestamp ?? ''), load_kwh: Number(p?.load_kwh ?? 0) }))
+      .filter((p: StoredLoadPoint) => !!p.timestamp);
+    const dataset: LocalDataset = {
+      id,
+      project_id,
+      name,
+      source_filename: d?.source_filename ? String(d.source_filename) : undefined,
+      fingerprint: d?.fingerprint ? String(d.fingerprint) : undefined,
+      start_time: d?.start_time ? String(d.start_time) : undefined,
+      end_time: d?.end_time ? String(d.end_time) : undefined,
+      interval_minutes: d?.interval_minutes != null ? Number(d.interval_minutes) : undefined,
+      points_count: Number(d?.points_count ?? normalizedPoints.length ?? 0),
+      meta_json: d?.meta_json ?? null,
+      quality_report_json: d?.quality_report_json ?? null,
+      created_at: String(d?.created_at ?? nowIso()),
+      updated_at: String(d?.updated_at ?? nowIso()),
+    };
+    await upsertDatasetWithPoints(dataset, normalizedPoints);
+  }
+
+  for (const r of runs) {
+    const id = String(r?.id ?? '').trim();
+    const project_id = String(r?.project_id ?? '').trim();
+    const name = String(r?.name ?? '').trim();
+    if (!id || !project_id || !name) continue;
+    const run: LocalRun = {
+      id,
+      project_id,
+      name,
+      created_at: String(r?.created_at ?? nowIso()),
+      updated_at: String(r?.updated_at ?? nowIso()),
+      dataset_id: r?.dataset_id ? String(r.dataset_id) : undefined,
+      embedded_points: Array.isArray(r?.embedded_points) ? r.embedded_points : undefined,
+      quality_snapshot: r?.quality_snapshot ? r.quality_snapshot : undefined,
+      config_snapshot: r?.config_snapshot,
+      cycles_snapshot: r?.cycles_snapshot,
+      economics_snapshot: r?.economics_snapshot,
+      profit_snapshot: r?.profit_snapshot,
+    };
+    const artifacts = Array.isArray(r?.artifacts) ? r.artifacts : [];
+    const decoded: LocalRunArtifact[] = artifacts
+      .map((a: any) => {
+        const kind = String(a?.kind ?? '').trim();
+        const filename = String(a?.filename ?? 'artifact').trim() || 'artifact';
+        const mime = String(a?.mime ?? 'application/octet-stream');
+        const base64 = String(a?.base64 ?? '');
+        if (!kind || !base64) return null;
+        return { kind, filename, mime, blob: base64ToBlob(base64, mime) } as LocalRunArtifact;
+      })
+      .filter((x: any): x is LocalRunArtifact => x !== null);
+    await upsertRunWithArtifacts(run, decoded);
+  }
 };
 
 export const importProjectFromJson = async (jsonText: string): Promise<LocalProject> => {

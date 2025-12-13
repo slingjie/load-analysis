@@ -1,0 +1,10 @@
+ - [x] 输入侧（已完成）：本地项目/数据集保存、加载、导入导出与去重；测算可复用 `payload.points` 避免重复上传。
+ - [x] 定义快照数据范围：快照包含 cycles/economics/profit 全量明细 + 配置快照，并保存导出文件（Blob）。
+ - [x] 本地 runs 存储：在 IndexedDB 增加 `runs`（快照）存储，支持保存/列表/详情/删除，并与项目关联。
+ - [x] 保存快照入口：在项目/数据集管理页提供“保存本次测算为快照”，保存 config_snapshot + cycles_snapshot + profit_snapshot + economics_snapshot，并拉取导出文件保存为 Blob。
+ - [x] 快照查看页面：在项目/数据集管理页增加快照列表/详情弹窗，支持按项目查看并一键加载快照用于回看。
+ - [x] 快照加载行为：加载快照时同步全局负荷数据（来自数据集或点位兜底），并支持“加载并恢复配置”用于复盘与复算。
+ - [x] 项目导入导出升级：导出/导入 JSON 时包含 runs（快照）与附件（Blob→base64），确保跨电脑迁移后仍可回看。
+ - [ ] 手工回归：完成 cycles+profit+economics 后保存快照→刷新→查看；切换不同快照对比；导入导出（含 Blob）；大数据集性能与失败降级验证。
+  - [ ] 第二阶段（迁移到 Supabase）：接入 Supabase（Auth + 表 + Storage + RLS），并提供“本地→Supabase”迁移入口（向导/批量上传）。
+  - [ ] 基础运维（第二阶段）：补充 README（Supabase 环境变量、RLS 配置步骤、Cloudflare 部署注意事项、CORS/安全建议）。

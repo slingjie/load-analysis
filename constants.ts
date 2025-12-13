@@ -13,9 +13,9 @@ export const TIER_MAP: Map<TierId, TierInfo> = new Map(
 );
 
 export const OPERATING_LOGIC_DEFINITIONS: readonly OperatingLogicInfo[] = [
-  { id: '待机', name: 'Standby', color: 'bg-gray-300', textColor: 'text-gray-800' },
+  { id: '待机', name: 'Standby', color: 'bg-slate-200', textColor: 'text-slate-800' },
   { id: '充', name: 'Charge', color: 'bg-blue-300', textColor: 'text-blue-800' },
-  { id: '放', name: 'Discharge', color: 'bg-yellow-300', textColor: 'text-yellow-800' },
+  { id: '放', name: 'Discharge', color: 'bg-orange-200', textColor: 'text-orange-800' },
 ];
 
 export const OPERATING_LOGIC_MAP: Map<OperatingLogicId, OperatingLogicInfo> = new Map(

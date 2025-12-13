@@ -1,5 +1,5 @@
-import React, { useState, useCallback, useRef, useMemo } from 'react';
-import type { Schedule, TierId, CellPosition, DateRule, OperatingLogicId } from '../types';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import type { Schedule, TierId, DateRule, OperatingLogicId } from '../types';
 import { MONTHS, HOURS } from '../constants';
 import { MergedGridCell } from './MergedGridCell';
 
@@ -13,11 +13,15 @@ interface TouGridProps {
 }
 
 export const TouGrid: React.FC<TouGridProps> = ({ schedule, dateRules, onScheduleChange, selectedTier, selectedOpLogic, editMode }) => {
-  const [isSelecting, setIsSelecting] = useState(false);
-  const [selectionStart, setSelectionStart] = useState<CellPosition | null>(null);
-  const [selectionEnd, setSelectionEnd] = useState<CellPosition | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [hoveredCol, setHoveredCol] = useState<number | null>(null);
   const [dimmedMonths, setDimmedMonths] = useState<Set<number>>(new Set());
   const gridRef = useRef<HTMLDivElement>(null);
+  const timeHeaderRef = useRef<HTMLDivElement>(null);
+  const [gridMetrics, setGridMetrics] = useState<{ labelWidth: number; colWidth: number }>({
+    labelWidth: 0,
+    colWidth: 48,
+  });
 
   const affectedMonths = useMemo(() => {
     const affected = new Map<number, string[]>();
@@ -57,14 +61,29 @@ export const TouGrid: React.FC<TouGridProps> = ({ schedule, dateRules, onSchedul
     });
   }, []);
 
-  const isInSelection = useCallback((monthIndex: number, hourIndex: number) => {
-    if (!selectionStart || !selectionEnd) return false;
-    const minMonth = Math.min(selectionStart.monthIndex, selectionEnd.monthIndex);
-    const maxMonth = Math.max(selectionStart.monthIndex, selectionEnd.monthIndex);
-    const minHour = Math.min(selectionStart.hourIndex, selectionEnd.hourIndex);
-    const maxHour = Math.max(selectionStart.hourIndex, selectionEnd.hourIndex);
-    return monthIndex >= minMonth && monthIndex <= maxMonth && hourIndex >= minHour && hourIndex <= maxHour;
-  }, [selectionStart, selectionEnd]);
+  const recomputeMetrics = useCallback(() => {
+    const grid = gridRef.current;
+    const timeHeader = timeHeaderRef.current;
+    if (!grid || !timeHeader) return;
+
+    const gridRect = grid.getBoundingClientRect();
+    const labelWidth = timeHeader.getBoundingClientRect().width;
+    const usableWidth = Math.max(0, gridRect.width - labelWidth);
+    const colWidth = usableWidth > 0 ? usableWidth / HOURS.length : 48;
+    setGridMetrics({ labelWidth, colWidth });
+  }, []);
+
+  useEffect(() => {
+    recomputeMetrics();
+    window.addEventListener('resize', recomputeMetrics);
+    return () => window.removeEventListener('resize', recomputeMetrics);
+  }, [recomputeMetrics]);
+
+  useEffect(() => {
+    const handleGlobalMouseUp = () => setIsDragging(false);
+    window.addEventListener('mouseup', handleGlobalMouseUp);
+    return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
+  }, []);
 
   const getHourFromMouseEvent = (e: React.MouseEvent<HTMLDivElement>, startHour: number, endHour: number): number => {
     const span = endHour - startHour + 1;
@@ -76,69 +95,77 @@ export const TouGrid: React.FC<TouGridProps> = ({ schedule, dateRules, onSchedul
     return startHour + clampedIndex;
   };
 
-  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>, monthIndex: number, startHour: number, endHour: number) => {
-    setIsSelecting(true);
-    const clickedHour = getHourFromMouseEvent(e, startHour, endHour);
-    setSelectionStart({ monthIndex, hourIndex: clickedHour });
-    setSelectionEnd({ monthIndex, hourIndex: clickedHour });
-  }, []);
+  const paintAt = useCallback((monthIndex: number, hourIndex: number) => {
+    const cur = schedule?.[monthIndex]?.[hourIndex];
+    if (!cur) return;
 
-  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>, monthIndex: number, startHour: number, endHour: number) => {
-    if (isSelecting) {
-        const currentHour = getHourFromMouseEvent(e, startHour, endHour);
-        setSelectionEnd({ monthIndex, hourIndex: currentHour });
+    if (editMode === 'tou') {
+      if (cur.tou === selectedTier) return;
+    } else {
+      if (cur.op === selectedOpLogic) return;
     }
-  }, [isSelecting]);
-  
-  const applySelection = useCallback(() => {
-     if (!isSelecting || !selectionStart || !selectionEnd) return;
-      
-    const newSchedule = schedule.map(row => row.map(cell => ({ ...cell })));
-    const minMonth = Math.min(selectionStart.monthIndex, selectionEnd.monthIndex);
-    const maxMonth = Math.max(selectionStart.monthIndex, selectionEnd.monthIndex);
-    const minHour = Math.min(selectionStart.hourIndex, selectionEnd.hourIndex);
-    const maxHour = Math.max(selectionStart.hourIndex, selectionEnd.hourIndex);
 
-    for (let m = minMonth; m <= maxMonth; m++) {
-      for (let h = minHour; h <= maxHour; h++) {
-        if (editMode === 'tou') {
-            newSchedule[m][h].tou = selectedTier;
-        } else {
-            newSchedule[m][h].op = selectedOpLogic;
-        }
-      }
+    const next = schedule.map((row, rIdx) => {
+      if (rIdx !== monthIndex) return row;
+      return row.map((cell, cIdx) => {
+        if (cIdx !== hourIndex) return cell;
+        return editMode === 'tou' ? { ...cell, tou: selectedTier } : { ...cell, op: selectedOpLogic };
+      });
+    });
+    onScheduleChange(next);
+  }, [editMode, onScheduleChange, schedule, selectedOpLogic, selectedTier]);
+
+  const handleCellMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>, monthIndex: number, startHour: number, endHour: number) => {
+    recomputeMetrics();
+    setIsDragging(true);
+    const hour = getHourFromMouseEvent(e, startHour, endHour);
+    setHoveredCol(hour);
+    paintAt(monthIndex, hour);
+  }, [paintAt, recomputeMetrics]);
+
+  const handleCellMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>, monthIndex: number, startHour: number, endHour: number) => {
+    const hour = getHourFromMouseEvent(e, startHour, endHour);
+    setHoveredCol(hour);
+    if (isDragging) {
+      paintAt(monthIndex, hour);
     }
-    onScheduleChange(newSchedule);
-
-    setIsSelecting(false);
-    setSelectionStart(null);
-    setSelectionEnd(null);
-  }, [isSelecting, selectionStart, selectionEnd, selectedTier, selectedOpLogic, editMode, onScheduleChange, schedule]);
-
-  const handleMouseUp = useCallback(() => {
-    applySelection();
-  }, [applySelection]);
-  
-  const handleMouseLeave = useCallback(() => {
-    if (isSelecting) {
-      applySelection();
-    }
-  }, [isSelecting, applySelection]);
+  }, [isDragging, paintAt]);
 
 
   return (
     <div 
       ref={gridRef}
-      className="grid select-none border-t border-l border-slate-300" 
+      className="relative grid select-none border-t border-l border-slate-300" 
       style={{ gridTemplateColumns: `auto repeat(${HOURS.length}, minmax(48px, 1fr))` }}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseLeave}
+      onMouseLeave={() => setHoveredCol(null)}
     >
+      {hoveredCol != null && gridMetrics.colWidth > 0 && (
+        <div
+          className="pointer-events-none absolute inset-y-0"
+          style={{
+            left: gridMetrics.labelWidth + hoveredCol * gridMetrics.colWidth,
+            width: gridMetrics.colWidth,
+          }}
+        >
+          <div className="absolute inset-0 bg-blue-900/10" />
+          <div className="absolute inset-y-0 left-0 w-[2px] bg-blue-500/40" />
+          <div className="absolute inset-y-0 right-0 w-[2px] bg-blue-500/40" />
+        </div>
+      )}
+
       {/* Header Row */}
-      <div className="sticky top-0 z-10 bg-slate-100 font-semibold text-slate-600 text-sm p-2 border-b border-r border-slate-300 flex items-center justify-center h-14">Time</div>
+      <div ref={timeHeaderRef} className="sticky top-0 z-20 bg-slate-100 font-semibold text-slate-600 text-sm p-2 border-b border-r border-slate-300 flex items-center justify-center h-14">Time</div>
       {HOURS.map((hour) => (
-        <div key={hour} className="sticky top-0 z-10 text-center bg-slate-100 font-semibold text-slate-600 text-sm p-2 border-b border-r border-slate-300 flex items-center justify-center h-14">
-          {hour}
+        <div
+          key={hour}
+          onMouseEnter={() => setHoveredCol(hour)}
+          className={`sticky top-0 z-20 text-center font-semibold text-sm p-2 border-b border-r border-slate-300 flex items-center justify-center h-14 transition-all duration-150 relative ${
+            hoveredCol === hour
+              ? 'bg-blue-600 text-white scale-110 shadow-md'
+              : 'bg-slate-100 text-slate-600'
+          }`}
+        >
+          {hour}-{hour + 1}
         </div>
       ))}
       
@@ -162,10 +189,6 @@ export const TouGrid: React.FC<TouGridProps> = ({ schedule, dateRules, onSchedul
             }
             const endHour = h + span - 1;
 
-            const isBlockSelected = Array.from({ length: span }, (_, i) => 
-                isInSelection(monthIndex, startHour + i)
-            ).some(Boolean);
-
             monthCells.push(
                 <MergedGridCell
                     key={`${monthIndex}-${startHour}`}
@@ -173,10 +196,9 @@ export const TouGrid: React.FC<TouGridProps> = ({ schedule, dateRules, onSchedul
                     startHour={startHour}
                     endHour={endHour}
                     span={span}
-                    isSelected={isBlockSelected}
                     isDimmed={isDimmed}
-                    onMouseDown={(e) => handleMouseDown(e, monthIndex, startHour, endHour)}
-                    onMouseMove={(e) => handleMouseMove(e, monthIndex, startHour, endHour)}
+                onMouseDown={(e) => handleCellMouseDown(e, monthIndex, startHour, endHour)}
+                onMouseMove={(e) => handleCellMouseMove(e, monthIndex, startHour, endHour)}
                 />
             );
             

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
@@ -45,6 +46,7 @@ from .services import loader, quality
 from .services import cycles as cycles_svc
 from .services import cleaning as cleaning_svc
 from .services import economics as economics_svc
+from .services import local_sync as local_sync_svc
 
 
 logger = logging.getLogger("load-analysis")
@@ -130,6 +132,37 @@ async def analyze_load(file: UploadFile = File(...)) -> LoadAnalysisResponse:
 
     logger.info("file %s analyzed: records=%s", filename, meta_dict.get("total_records"))
     return response
+
+
+# =========================
+# 本地跨浏览器同步（Local Sync）
+# =========================
+
+
+@app.get("/api/local-sync/snapshot")
+async def get_local_sync_snapshot() -> Dict[str, Any]:
+    """返回本机保存的同步快照（用于跨浏览器自动同步）"""
+    snap = local_sync_svc.read_snapshot()
+    return {"exists": bool(snap), "snapshot": snap}
+
+
+@app.post("/api/local-sync/snapshot")
+async def put_local_sync_snapshot(body: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """写入同步快照（简单 LWW：拒绝比现有更旧的 exported_at）"""
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="body must be an object")
+
+    incoming = body.get("snapshot") if isinstance(body.get("snapshot"), dict) else body
+    if not isinstance(incoming, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="snapshot must be an object")
+
+    existing = local_sync_svc.read_snapshot()
+    ok, reason = local_sync_svc.should_accept_incoming(existing, incoming)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=reason)
+
+    local_sync_svc.write_snapshot(incoming)
+    return {"ok": True, "reason": reason}
 
 
 # =========================
@@ -347,6 +380,20 @@ async def health_check() -> dict[str, str]:
     """简单健康检查"""
 
     return {"status": "ok"}
+
+
+@app.get("/api/debug/runtime")
+async def debug_runtime() -> Dict[str, Any]:
+    """运行时自检：用于排查“端口指向对了但路由缺失/代码未更新”等问题（仅本地调试使用）"""
+
+    paths = sorted({getattr(r, "path", "") for r in app.routes})
+    return {
+        "python": {"executable": os.sys.executable, "version": os.sys.version},
+        "cwd": os.getcwd(),
+        "app_file": __file__,
+        "has_local_sync": "/api/local-sync/snapshot" in paths,
+        "paths": paths,
+    }
 
 
 def _parse_payload(payload: str | Dict[str, Any]) -> Dict[str, Any]:

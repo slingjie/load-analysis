@@ -42,6 +42,19 @@ interface StorageProfitPageProps {
   // 若从 StorageCycles 页触发跳转，可指定日期并通知消费完毕
   selectedDateFromCycles?: string | null;
   onSelectedDateConsumed?: () => void;
+  onLatestProfitChange?: (snapshot: {
+    payload: StorageParamsPayload | null;
+    cyclesResult: BackendStorageCyclesResponse | null;
+    curvesData: BackendStorageCurvesResponse | null;
+    selectedDate: string | null;
+  }) => void;
+  restoredProfitRun?: {
+    payload: StorageParamsPayload | null;
+    cyclesResult: BackendStorageCyclesResponse | null;
+    curvesData: BackendStorageCurvesResponse | null;
+    selectedDate: string | null;
+  } | null;
+  restoredVersion?: number;
 }
 
 const buildDefaultStoragePayload = (
@@ -99,6 +112,9 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
   storageCyclesPayload,
   selectedDateFromCycles,
   onSelectedDateConsumed,
+  onLatestProfitChange,
+  restoredProfitRun,
+  restoredVersion,
 }) => {
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [curvesData, setCurvesData] = useState<BackendStorageCurvesResponse | null>(null);
@@ -175,6 +191,15 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
     }
   }, [selectedDateFromCycles, onSelectedDateConsumed]);
 
+  useEffect(() => {
+    if (!restoredVersion) return;
+    if (!restoredProfitRun) return;
+    setError(null);
+    if (restoredProfitRun.cyclesResult) setCyclesResult(restoredProfitRun.cyclesResult);
+    setCurvesData(restoredProfitRun.curvesData ?? null);
+    if (restoredProfitRun.selectedDate) setSelectedDate(restoredProfitRun.selectedDate);
+  }, [restoredVersion, restoredProfitRun]);
+
   const handleFetchCurves = useCallback(async () => {
     if (!selectedDate) return;
     const payload =
@@ -200,6 +225,17 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
       setLoading(false);
     }
   }, [externalCleanedData, scheduleData, selectedDate, storageCyclesPayload]);
+
+  useEffect(() => {
+    if (!onLatestProfitChange) return;
+    const payload = storageCyclesPayload ?? buildDefaultStoragePayload(scheduleData, externalCleanedData);
+    onLatestProfitChange({
+      payload: payload ?? null,
+      cyclesResult,
+      curvesData,
+      selectedDate,
+    });
+  }, [onLatestProfitChange, storageCyclesPayload, scheduleData, externalCleanedData, cyclesResult, curvesData, selectedDate]);
 
   const selectedDayProfitMain: BackendStorageProfitWithFormulas['main'] | null = useMemo(() => {
     if (!cyclesResult || !selectedDate) return null;

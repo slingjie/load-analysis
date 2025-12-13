@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import type { Schedule, TierId, DateRule, OperatingLogicId, Configuration, CellData, BackendAnalysisMeta, BackendQualityReport, MonthlyTouPrices, BackendStorageCyclesResponse } from './types';
+import type { Schedule, TierId, DateRule, OperatingLogicId, Configuration, CellData, BackendAnalysisMeta, BackendQualityReport, MonthlyTouPrices, BackendStorageCyclesResponse, BackendStorageCurvesResponse, StorageEconomicsInput, StorageEconomicsResult } from './types';
 import { INITIAL_APP_STATE, VALID_OP_LOGIC_IDS, VALID_TIER_IDS } from './constants';
 import * as api from './api';
 import { exportScheduleToExcel } from './utils';
@@ -11,9 +11,7 @@ import type { StorageParamsPayload } from './storageApi';
 
 // Components
 import { ConfigurationManager } from './components/ConfigurationManager';
-import { TouGrid } from './components/TouGrid';
-import { TierSelector } from './components/TierSelector';
-import { OperatingLogicSelector } from './components/OperatingLogicSelector';
+import { ScheduleEditorPage } from './components/ScheduleEditorPage';
 import { DateRuleManager } from './components/DateRuleManager';
 import { DateRuleModal } from './components/DateRuleModal';
 import { JsonOutput } from './components/JsonOutput';
@@ -26,6 +24,7 @@ import { StorageProfitPage } from './components/StorageProfitPage';
 import { StorageEconomicsPage } from './components/StorageEconomicsPage';
 import { PriceEditorPage } from './components/PriceEditorPage';
 import { ProjectSummaryPage } from './components/ProjectSummaryPage';
+import { ProjectDatasetsPage } from './components/ProjectDatasetsPage';
 import { FloatingSectionNav, type SectionItem } from './components/FloatingSectionNav';
 import UploadProgressRing from './components/UploadProgressRing';
 import { useScrollSpy } from './hooks/useScrollSpy';
@@ -65,7 +64,7 @@ const EditModeSelector: React.FC<{
 
 const App: React.FC = () => {
   // --- Page State ---
-  const [currentPage, setCurrentPage] = useState<'editor' | 'price' | 'analysis' | 'matrix' | 'quality' | 'storage' | 'profit' | 'economics' | 'summary'>('editor');
+  const [currentPage, setCurrentPage] = useState<'editor' | 'price' | 'analysis' | 'datasets' | 'matrix' | 'quality' | 'storage' | 'profit' | 'economics' | 'summary'>('editor');
   const [profitSelectedDate, setProfitSelectedDate] = useState<string | null>(null);
   const [lastStorageRun, setLastStorageRun] = useState<{
     payload: StorageParamsPayload;
@@ -116,6 +115,9 @@ const App: React.FC = () => {
   const [loadCleanedData, setLoadCleanedData] = useState<LoadDataPoint[]>([]);
   const [loadQuality, setLoadQuality] = useState<BackendQualityReport | null>(null);
   const [loadMeta, setLoadMeta] = useState<BackendAnalysisMeta | null>(null);
+  const [loadSourceLabel, setLoadSourceLabel] = useState<string>('');
+  const [loadSourceFilename, setLoadSourceFilename] = useState<string>('');
+  const [currentDatasetId, setCurrentDatasetId] = useState<string>('');
   const [isLoadUploading, setIsLoadUploading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showLoadSlow, setShowLoadSlow] = useState(false);
@@ -126,6 +128,37 @@ const App: React.FC = () => {
   const [uploadEtaSeconds, setUploadEtaSeconds] = useState<number | null>(null);
   const uploadControllerRef = useRef<{ abort: () => void } | null>(null);
   const progressSamplesRef = useRef<Array<{ time: number; loaded: number }>>([]);
+  const [lastEconomicsRun, setLastEconomicsRun] = useState<{
+    input: StorageEconomicsInput;
+    result: StorageEconomicsResult;
+    userSharePercent: number;
+  } | null>(null);
+  const [lastProfitRun, setLastProfitRun] = useState<{
+    payload: StorageParamsPayload | null;
+    cyclesResult: BackendStorageCyclesResponse | null;
+    curvesData: BackendStorageCurvesResponse | null;
+    selectedDate: string | null;
+  } | null>(null);
+  const [restoreVersion, setRestoreVersion] = useState(0);
+
+  // 解决“页面隐藏(display:none)期间初始化/更新图表导致尺寸为 0”的问题：
+  // 切换页面或恢复快照后，主动触发一次 resize，让 ECharts/Chart 重新计算布局。
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const fire = () => {
+      try {
+        window.dispatchEvent(new Event('resize'));
+      } catch {
+        // ignore
+      }
+    };
+    const t1 = window.setTimeout(fire, 30);
+    const t2 = window.setTimeout(fire, 200);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, [currentPage, restoreVersion]);
 
   // --- 悬浮目录：根据当前页面组织小节（仅桌面端展示） ---
   const navSections: SectionItem[] = useMemo(() => {
@@ -133,8 +166,7 @@ const App: React.FC = () => {
       case 'editor':
         return [
           { id: 'section-config', title: '配置管理' },
-          { id: 'section-edit-mode', title: '编辑模式' },
-          { id: 'section-tou-grid', title: '分时表格' },
+          { id: 'section-schedule-editor', title: '排程编辑' },
           { id: 'section-schedule-copy', title: '批量复制' },
           { id: 'section-date-rules', title: '日期规则' },
           { id: 'section-json-output', title: '数据导出' },
@@ -158,6 +190,14 @@ const App: React.FC = () => {
           { id: 'section-matrix-table', title: '日×时矩阵' },
           { id: 'section-monthly-summary', title: '月度汇总' },
           { id: 'section-matrix-note', title: '本页说明' },
+        ];
+      case 'datasets':
+        return [
+          { id: 'section-datasets-intro', title: '说明' },
+          { id: 'section-projects', title: '项目管理' },
+          { id: 'section-save-current', title: '保存当前负荷' },
+          { id: 'section-datasets', title: '数据集列表' },
+          { id: 'section-datasets-note', title: '本页说明' },
         ];
       case 'storage':
         return [
@@ -787,6 +827,13 @@ const App: React.FC = () => {
             <div className="flex-1 flex justify-center">
               <div className="bg-slate-200 rounded-lg p-1 flex space-x-1">
               <button 
+                onClick={() => setCurrentPage('datasets')} 
+                className={`${navButtonBaseClasses} ${currentPage === 'datasets' ? navButtonActiveClasses : navButtonInactiveClasses}`}
+                aria-current={currentPage === 'datasets' ? 'page' : undefined}
+              >
+                Datasets
+              </button>
+              <button 
                 onClick={() => setCurrentPage('editor')} 
                 className={`${navButtonBaseClasses} ${currentPage === 'editor' ? navButtonActiveClasses : navButtonInactiveClasses}`}
                 aria-current={currentPage === 'editor' ? 'page' : undefined}
@@ -899,7 +946,10 @@ const App: React.FC = () => {
             </div>
           )}
           {loadCleanedData.length > 0 && (
-            <span className="text-xs text-green-700">已加载 {loadCleanedData.length} 小时，范围：{loadMeta?.start ? new Date(loadMeta.start).toLocaleString() : '-'} ~ {loadMeta?.end ? new Date(loadMeta.end).toLocaleString() : '-'}</span>
+            <span className="text-xs text-green-700">
+              已加载 {loadCleanedData.length} 小时，范围：{loadMeta?.start ? new Date(loadMeta.start).toLocaleString() : '-'} ~ {loadMeta?.end ? new Date(loadMeta.end).toLocaleString() : '-'}
+              {loadSourceLabel ? <span className="ml-2 text-slate-700">来源：{loadSourceLabel}</span> : null}
+            </span>
           )}
         </div>
         {loadError && <div className="text-xs text-red-600">{loadError}</div>}
@@ -913,6 +963,9 @@ const App: React.FC = () => {
             const file = event.target.files?.[0];
             if (!file) return;
             setIsLoadUploading(true);
+            setLoadSourceFilename(file.name || '');
+            setLoadSourceLabel(file.name ? `上传：${file.name}` : '上传文件');
+            setCurrentDatasetId('');
             setLoadUploadProgress(0);
             setShowUploadProgress(true);
             setUploadPhase('uploading');
@@ -968,6 +1021,8 @@ const App: React.FC = () => {
               setLoadCleanedData(normalized);
               setLoadQuality(response.report);
               setLoadMeta(response.meta);
+              setLoadSourceLabel(file.name ? `上传：${file.name}` : '上传文件');
+              setCurrentDatasetId('');
               setUploadPhase('done');
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err);
@@ -975,6 +1030,9 @@ const App: React.FC = () => {
               setLoadCleanedData([]);
               setLoadQuality(null);
               setLoadMeta(null);
+              setLoadSourceLabel('');
+              setLoadSourceFilename('');
+              setCurrentDatasetId('');
               if (message.includes('取消')) {
                 setUploadPhase('error');
               } else {
@@ -1016,24 +1074,17 @@ const App: React.FC = () => {
           />
           </div>
 
-          {/* 编辑模式 */}
-          <div id="section-edit-mode" className="scroll-mt-24 grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-            <EditModeSelector editMode={editMode} setEditMode={setEditMode} />
-            {editMode === 'tou' 
-                ? <TierSelector selectedTier={selectedTier} onTierSelect={setSelectedTier} />
-                : <OperatingLogicSelector selectedOpLogic={selectedOpLogic} onOpLogicSelect={setSelectedOpLogic} />
-            }
-          </div>
-
-          {/* 分时表格 */}
-          <div id="section-tou-grid" className="scroll-mt-24 bg-white rounded-xl shadow-lg p-1 overflow-x-auto">
-             <TouGrid 
-                schedule={appState.monthlySchedule}
-                dateRules={appState.dateRules}
-                onScheduleChange={handleScheduleChange}
-                selectedTier={selectedTier}
-                selectedOpLogic={selectedOpLogic}
-                editMode={editMode}
+          {/* 排程编辑（按 docs/1213schedule页面交互修改.md 的交互实现） */}
+          <div id="section-schedule-editor" className="scroll-mt-24">
+            <ScheduleEditorPage
+              schedule={appState.monthlySchedule}
+              onScheduleChange={handleScheduleChange}
+              editMode={editMode}
+              setEditMode={setEditMode}
+              selectedTier={selectedTier}
+              setSelectedTier={setSelectedTier}
+              selectedOpLogic={selectedOpLogic}
+              setSelectedOpLogic={setSelectedOpLogic}
             />
           </div>
 
@@ -1085,6 +1136,40 @@ const App: React.FC = () => {
         />
       )}
 
+      {/* Datasets 页面保持挂载，避免切换时状态重置 */}
+      <div className={currentPage === 'datasets' ? '' : 'hidden'}>
+        <ProjectDatasetsPage
+          currentLoad={{
+            points: loadCleanedData,
+            meta: loadMeta,
+            report: loadQuality,
+            sourceFilename: loadSourceFilename || null,
+          }}
+          currentDatasetId={currentDatasetId || null}
+          scheduleSnapshot={appState}
+          lastCyclesRun={lastStorageRun}
+          lastProfitRun={lastProfitRun}
+          lastEconomicsRun={lastEconomicsRun}
+          onLoadToGlobal={({ points, meta, report, sourceLabel, datasetId }) => {
+            setLoadCleanedData(points);
+            setLoadMeta(meta);
+            setLoadQuality(report);
+            setLoadSourceLabel(sourceLabel);
+            setLoadSourceFilename('');
+            setCurrentDatasetId(datasetId || '');
+          }}
+          onRestoreConfig={(next) => {
+            setAppState(next);
+          }}
+          onRestoreRunPages={(snap) => {
+            setLastStorageRun(snap.cyclesRun);
+            setLastProfitRun(snap.profitRun);
+            setLastEconomicsRun(snap.economicsRun);
+            setRestoreVersion((v) => v + 1);
+          }}
+        />
+      </div>
+
       {currentPage === 'matrix' && (
         <EnergyMatrixPage 
           scheduleData={appState}
@@ -1109,6 +1194,9 @@ const App: React.FC = () => {
           storageCyclesPayload={lastStorageRun?.payload ?? null}
           selectedDateFromCycles={profitSelectedDate}
           onSelectedDateConsumed={() => setProfitSelectedDate(null)}
+          onLatestProfitChange={(snapshot) => setLastProfitRun(snapshot)}
+          restoredProfitRun={restoreVersion > 0 ? lastProfitRun : null}
+          restoredVersion={restoreVersion}
         />
       )}
       {currentPage === 'summary' && (
@@ -1125,6 +1213,8 @@ const App: React.FC = () => {
         <StorageCyclesPage 
           scheduleData={appState}
           externalCleanedData={loadCleanedData}
+          restoredCyclesRun={restoreVersion > 0 ? lastStorageRun : null}
+          restoredVersion={restoreVersion}
           onNavigateProfit={(date) => {
             setProfitSelectedDate(date);
             setCurrentPage('profit');
@@ -1140,6 +1230,9 @@ const App: React.FC = () => {
           externalFirstYearRevenue={lastStorageRunYearEquivProfitYuan}
           externalCapacityKwh={lastStorageRun?.payload?.storage?.capacity_kwh ?? null}
           externalFirstYearEnergyKwh={lastStorageRun?.response?.year?.profit?.main?.discharge_energy_kwh ?? null}
+          onLatestEconomicsChange={(snapshot) => setLastEconomicsRun(snapshot)}
+          restoredEconomicsRun={restoreVersion > 0 ? lastEconomicsRun : null}
+          restoredVersion={restoreVersion}
         />
       </div>
 

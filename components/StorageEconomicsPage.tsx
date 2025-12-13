@@ -217,6 +217,13 @@ interface StorageEconomicsPageProps {
   externalCapacityKwh?: number | null;
   // 从 Storage Cycles 传入的首年发电能量，单位：kWh（可选）
   externalFirstYearEnergyKwh?: number | null;
+  onLatestEconomicsChange?: (snapshot: {
+    input: StorageEconomicsInput;
+    result: StorageEconomicsResult;
+    userSharePercent: number;
+  }) => void;
+  restoredEconomicsRun?: { input: StorageEconomicsInput; result: StorageEconomicsResult; userSharePercent: number } | null;
+  restoredVersion?: number;
 }
 
 // ==================== 主组件 ====================
@@ -224,6 +231,9 @@ export const StorageEconomicsPage: React.FC<StorageEconomicsPageProps> = ({
   externalFirstYearRevenue,
   externalCapacityKwh,
   externalFirstYearEnergyKwh,
+  onLatestEconomicsChange,
+  restoredEconomicsRun,
+  restoredVersion,
 }) => {
   // ==================== 表单状态 ====================
   const [firstYearRevenue, setFirstYearRevenue] = useState<string>(
@@ -270,6 +280,61 @@ export const StorageEconomicsPage: React.FC<StorageEconomicsPageProps> = ({
       setFirstYearEnergyKwh(String(externalFirstYearEnergyKwh));
     }
   }, [externalFirstYearEnergyKwh]);
+
+  useEffect(() => {
+    if (!restoredVersion) return;
+    if (!restoredEconomicsRun?.input || !restoredEconomicsRun?.result) return;
+    setError(null);
+
+    const input = restoredEconomicsRun.input;
+    const share = Number(restoredEconomicsRun.userSharePercent ?? 0);
+    setUserSharePercent(String(Number.isFinite(share) ? share : 0));
+
+    // 将 projectFirstYearRevenue 还原回“未分成前”的首年净收益展示值
+    const projectRev = Number(input.first_year_revenue ?? 0);
+    const denom = 1 - (Number.isFinite(share) ? share : 0) / 100;
+    const totalRev = denom > 0 ? (projectRev / denom) : projectRev;
+    setFirstYearRevenue(String(totalRev));
+
+    if (input.first_year_energy_kwh != null) setFirstYearEnergyKwh(String(input.first_year_energy_kwh));
+    setProjectYears(String(input.project_years ?? DEFAULT_PROJECT_YEARS));
+    setAnnualOmCost(String(input.annual_om_cost ?? 0));
+    setFirstYearDecayRate(String((Number(input.first_year_decay_rate ?? DEFAULT_FIRST_YEAR_DECAY_RATE) * 100).toFixed(2)));
+    setSubsequentDecayRate(String((Number(input.subsequent_decay_rate ?? DEFAULT_SUBSEQUENT_DECAY_RATE) * 100).toFixed(2)));
+    setCapexPerWh(String(input.capex_per_wh ?? DEFAULT_CAPEX_PER_WH));
+    setInstalledCapacityKwh(String(input.installed_capacity_kwh ?? ''));
+    if (input.cell_replacement_cost != null) setCellReplacementCost(String(input.cell_replacement_cost));
+    if (input.cell_replacement_year != null) setCellReplacementYear(String(input.cell_replacement_year));
+
+    setResult(restoredEconomicsRun.result);
+
+    // 复用页面现有逻辑，重建 yearlyDischargeEnergyKwh（用于表格显示）
+    const parsedFirstYearEnergyKwh = input.first_year_energy_kwh ?? null;
+    const parsedProjectYears = Number(input.project_years ?? 0);
+    const parsedFirstYearDecayRate = Number(input.first_year_decay_rate ?? 0);
+    const parsedSubsequentDecayRate = Number(input.subsequent_decay_rate ?? 0);
+    const parsedCellReplacementYear = input.cell_replacement_year ?? null;
+    if (parsedFirstYearEnergyKwh != null && parsedFirstYearEnergyKwh > 0 && parsedProjectYears > 0) {
+      const energySeries: number[] = [];
+      let currentBaseEnergy = parsedFirstYearEnergyKwh;
+      let phaseStartYear = 1;
+      for (let yearIndex = 1; yearIndex <= parsedProjectYears; yearIndex += 1) {
+        if (parsedCellReplacementYear && yearIndex === parsedCellReplacementYear) {
+          currentBaseEnergy = parsedFirstYearEnergyKwh;
+          phaseStartYear = yearIndex;
+        }
+        const yearsInPhase = yearIndex - phaseStartYear;
+        const energyThisYear =
+          currentBaseEnergy *
+          (1 - parsedFirstYearDecayRate) *
+          Math.pow(1 - parsedSubsequentDecayRate, yearsInPhase);
+        energySeries.push(energyThisYear);
+      }
+      setYearlyDischargeEnergyKwh(energySeries);
+    } else {
+      setYearlyDischargeEnergyKwh(null);
+    }
+  }, [restoredVersion, restoredEconomicsRun]);
 
   // ==================== 表单验证 ====================
   const isFormValid = useMemo(() => {
@@ -333,6 +398,7 @@ export const StorageEconomicsPage: React.FC<StorageEconomicsPageProps> = ({
 
       const response = await computeStorageEconomics(input);
       setResult(response);
+      onLatestEconomicsChange?.({ input, result: response, userSharePercent: normalizedShare });
 
       // 计算运营期内各年的放电量（kWh），用于“年度现金流明细”展示
       // 规则与后端收益衰减模型保持一致：
@@ -381,6 +447,7 @@ export const StorageEconomicsPage: React.FC<StorageEconomicsPageProps> = ({
     installedCapacityKwh,
     cellReplacementCost,
     cellReplacementYear,
+    onLatestEconomicsChange,
   ]);
 
   // ==================== 导出报表 ====================

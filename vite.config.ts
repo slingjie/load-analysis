@@ -11,10 +11,21 @@ export default defineConfig(({ mode }) => {
         proxy: {
           // 仅代理真实后端接口路径，避免将本地模块如 /api.ts 误代理到后端
           '/api/': {
-            target: env.VITE_BACKEND_BASE_URL || 'http://localhost:8002',
+            target: env.VITE_BACKEND_BASE_URL || 'http://localhost:8000',
             changeOrigin: true,
             secure: false,
-          }
+          },
+          // 便于在前端同源环境下自检后端版本/路由是否已加载（例如检查 /api/local-sync/snapshot 是否存在）
+          '/openapi.json': {
+            target: env.VITE_BACKEND_BASE_URL || 'http://localhost:8000',
+            changeOrigin: true,
+            secure: false,
+          },
+          '/health': {
+            target: env.VITE_BACKEND_BASE_URL || 'http://localhost:8000',
+            changeOrigin: true,
+            secure: false,
+          },
         }
       },
       plugins: [react()],

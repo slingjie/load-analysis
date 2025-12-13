@@ -36,6 +36,12 @@ if not exist ".env.local" (
 
 REM 激活虚拟环境
 call .venv\Scripts\activate.bat
+set "PY_EXE=%~dp0.venv\Scripts\python.exe"
+if not exist "%PY_EXE%" (
+    echo 错误: 未找到虚拟环境 Python: %PY_EXE%
+    pause
+    exit /b 1
+)
 
 echo.
 echo 启动后端服务...
@@ -59,19 +65,45 @@ if defined PID (
     timeout /t 1 /nobreak >nul
 )
 
+REM 若端口仍被占用，自动切换到下一个可用端口（最多尝试 20 个）
+set "TRY=0"
+:CHECK_PORT
+set /a TRY+=1
+set "PID="
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%PORT% " ^| findstr "LISTENING"') do (
+    set "PID=%%a"
+)
+if defined PID (
+    if %TRY% GEQ 20 (
+        echo 错误: 无法找到可用端口（从 8000 起尝试了 20 个）
+        pause
+        exit /b 1
+    )
+    set /a PORT+=1
+    goto CHECK_PORT
+)
+
 REM 启动后端（在新 cmd 窗口运行：切换到脚本目录、激活虚拟环境、设置 UTF-8）
-start "backend-service" cmd /k "cd /d "%~dp0" && chcp 65001>nul && call .venv\Scripts\activate.bat && python -X utf8 -m uvicorn backend.app:app --host 0.0.0.0 --port %PORT%"
+start "backend-service" cmd /k "cd /d "%~dp0" && chcp 65001>nul && call .venv\Scripts\activate.bat && "%PY_EXE%" -X utf8 -m uvicorn backend.app:app --app-dir "%~dp0" --host 0.0.0.0 --port %PORT% --reload-dir "%~dp0" --reload"
 
 REM 等待后端启动
 echo 等待后端启动...
 timeout /t 3 /nobreak
 
 REM 尝试测试后端
-curl -s http://localhost:8000/health >nul 2>&1
+curl -s http://localhost:%PORT%/health >nul 2>&1
 if %errorlevel% equ 0 (
     echo 后端服务正常
 ) else (
     echo 警告: 后端可能未启动，请检查上面的窗口
+)
+
+REM 检查本地同步接口是否已加载（避免后端仍在运行旧版本导致 404）
+curl -s http://localhost:%PORT%/openapi.json | findstr /C:"/api/local-sync/snapshot" >nul 2>&1
+if %errorlevel% equ 0 (
+    echo 本地同步接口已加载 (/api/local-sync/snapshot)
+) else (
+    echo 警告: 未检测到本地同步接口 (/api/local-sync/snapshot)；请确认后端已更新并彻底重启
 )
 
 echo.
