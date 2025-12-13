@@ -101,3 +101,17 @@ export interface StorageParamsTemplate {
 
 // 默认模板已清空，由用户自行创建
 export const STORAGE_PARAMS_TEMPLATES: StorageParamsTemplate[] = [];
+
+// ================== 放电策略信息 ==================
+export const DISCHARGE_STRATEGY_INFO = {
+  sequential: {
+    name: '时序放电',
+    description: '按时间顺序线性分配，保守测算',
+    icon: '⏱️'
+  },
+  'price-priority': {
+    name: '尖段优先',
+    description: '优先向高价时段分配，最大化收益',
+    icon: '⚡'
+  }
+} as const;

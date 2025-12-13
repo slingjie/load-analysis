@@ -9,6 +9,7 @@ import type {
   CleaningConfigRequest,
   ComparisonResult,
   CleaningResultResponse,
+  DischargeStrategy,
 } from '../types';
 import type { LoadDataPoint } from '../utils';
 import {
@@ -17,12 +18,14 @@ import {
   analyzeDataForCleaning,
   applyDataCleaning,
   exportStorageCyclesReport,
+  exportStorageBusinessReport,
   type StorageParamsPayload,
+  BASE_URL as STORAGE_BACKEND_BASE_URL,
 } from '../storageApi';
 import UploadProgressRing from './UploadProgressRing';
 import CleaningConfirmDialog from './CleaningConfirmDialog';
 import { BatchCapacityChart } from './BatchCapacityChart';
-import { STORAGE_PARAMS_TEMPLATES, type StorageParamsTemplate } from '../constants';
+import { STORAGE_PARAMS_TEMPLATES, type StorageParamsTemplate, DISCHARGE_STRATEGY_INFO } from '../constants';
 
 const CONFIG_STORAGE_PREFIX = 'storageCyclesConfig:';
 const USER_TEMPLATES_STORAGE_KEY = 'storageCyclesUserTemplates';
@@ -136,6 +139,9 @@ export const StorageCyclesPage: React.FC<Props> = ({
   const [solveStartCapacityKwh, setSolveStartCapacityKwh] = useState<number>(5000);
   const [solveStepCapacityKwh, setSolveStepCapacityKwh] = useState<number>(500);
   const [solveSteps, setSolveSteps] = useState<number>(SOLVE_CAPACITY_STEPS);
+  
+  // ================== 放电策略状态 ==================
+  const [dischargeStrategy, setDischargeStrategy] = useState<DischargeStrategy>('sequential');
   const [solveSuggestion, setSolveSuggestion] = useState<{
     targetYearEq: number;
     bestCapacityKwh: number;
@@ -884,6 +890,7 @@ export const StorageCyclesPage: React.FC<Props> = ({
         calc_style: 'window_avg',
         energy_formula: params.energy_formula,
         merge_threshold_minutes: params.merge_threshold_minutes,
+        discharge_strategy: dischargeStrategy,  // 新增：放电策略
       },
       strategySource: {
         monthlySchedule: scheduleData.monthlySchedule,
@@ -1571,19 +1578,13 @@ export const StorageCyclesPage: React.FC<Props> = ({
 
       const cap = initialItems[i].capacityKwh;
       
-      // 根据功率模式计算充放电功率
-      // c_rate 模式：功率 = 容量 × 倍率；fixed 模式：使用固定余量值
-      const dynamicPowerKw = powerMode === 'c_rate' 
-        ? cap * params.c_rate 
-        : params.reserve_charge_kw; // fixed 模式下使用 reserve 值作为功率上限
-      
       const payload: StorageParamsPayload = {
         storage: {
           ...baseStorage,
           capacity_kwh: cap,
-          // 倍率联动模式下，动态计算功率；固定模式下保持原有 reserve 值
-          reserve_charge_kw: powerMode === 'c_rate' ? 0 : params.reserve_charge_kw,
-          reserve_discharge_kw: powerMode === 'c_rate' ? 0 : params.reserve_discharge_kw,
+          // 与“单次测算”保持一致：reserve_charge_kw / reserve_discharge_kw 始终代表“充/放电余量”（不是功率上限）
+          // 批量对比只改变容量，其余参数保持不变，避免同容量结果不一致。
+          discharge_strategy: dischargeStrategy,
         },
         strategySource: {
           monthlySchedule: scheduleData.monthlySchedule,
@@ -1685,8 +1686,8 @@ export const StorageCyclesPage: React.FC<Props> = ({
     return bestIdx;
   }, [batchResults, targetYearEqCyclesInput]);
 
-  // 按需导出 Excel 报表：复用最近一次测算的 payload 与文件，仅在用户点击时触发后端导出
-  const handleExportExcel = async () => {
+  // 按需导出调试报表：复用最近一次测算的 payload 与文件，仅在用户点击时触发后端导出
+  const handleExportDebugExcel = async () => {
     if (!result) {
       setError('请先完成一次储能次数测算，再导出 Excel 报表。');
       return;
@@ -1699,17 +1700,54 @@ export const StorageCyclesPage: React.FC<Props> = ({
     }
     try {
       setLoading(true);
-      setProgressStep('正在导出 Excel 报表...');
+      setProgressStep('正在导出调试报表（详细结果）...');
       const resp = await exportStorageCyclesReport(file ?? null, payload);
       // 导出报表不影响当前主结果，仅用于获取 excel_path
       if (resp.excel_path) {
-        // 直接在新窗口打开导出结果，保持体验与原先“点击链接下载”一致
-        window.open(resp.excel_path, '_blank', 'noopener,noreferrer');
+        // 构造完整的后端文件 URL：优先使用绝对 URL，其次拼接后端 BASE_URL
+        const path = resp.excel_path;
+        const url = path.startsWith('http')
+          ? path
+          : `${STORAGE_BACKEND_BASE_URL}${path.startsWith('/') ? '' : '/'}${path}`;
+        window.open(url, '_blank', 'noopener,noreferrer');
       } else {
         setError('后端未返回报表下载地址，请稍后重试。');
       }
     } catch (e: any) {
       setError(e?.message || '导出 Excel 报表失败，请稍后重试。');
+    } finally {
+      setProgressStep('');
+      setLoading(false);
+    }
+  };
+
+  // 导出运行与收益业务报表：更贴近业务视角的多表 CSV（ZIP 打包）
+  const handleExportBusinessExcel = async () => {
+    if (!result) {
+      setError('请先完成一次储能次数测算，再导出 Excel 报表。');
+      return;
+    }
+    const payload = lastPayloadRef.current;
+    const file = lastFileRef.current;
+    if (!payload) {
+      setError('未找到最近一次测算参数，请重新测算后再导出报表。');
+      return;
+    }
+    try {
+      setLoading(true);
+      setProgressStep('正在导出运行与收益报表（CSV）...');
+      const resp = await exportStorageBusinessReport(file ?? null, payload);
+      if (resp.excel_path) {
+        const path = resp.excel_path;
+        const url = path.startsWith('http')
+          ? path
+          : `${STORAGE_BACKEND_BASE_URL}${path.startsWith('/') ? '' : '/'}${path}`;
+        window.open(url, '_blank', 'noopener,noreferrer');
+      } else {
+        setError('后端未返回报表下载地址，请稍后重试。');
+      }
+    } catch (e: any) {
+      setError(e?.message || '导出运行与收益报表失败，请稍后重试。');
     } finally {
       setProgressStep('');
       setLoading(false);
@@ -2684,6 +2722,50 @@ export const StorageCyclesPage: React.FC<Props> = ({
                   </select>
                   <div className="text-[11px] text-slate-500">
                     physics 为物理模型精算，sample 为样本法近似。
+                  </div>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-slate-700">放电策略</span>
+                  <div className="space-y-2">
+                    <label className="flex items-start cursor-pointer">
+                      <input
+                        type="radio"
+                        name="discharge-strategy"
+                        value="sequential"
+                        checked={dischargeStrategy === 'sequential'}
+                        onChange={(e) => setDischargeStrategy(e.target.value as DischargeStrategy)}
+                        className="mt-1 mr-2"
+                      />
+                      <div className="flex-1">
+                        <div className="text-sm font-medium text-slate-700">
+                          {DISCHARGE_STRATEGY_INFO.sequential.icon} {DISCHARGE_STRATEGY_INFO.sequential.name}
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {DISCHARGE_STRATEGY_INFO.sequential.description}
+                        </div>
+                      </div>
+                    </label>
+                    <label className="flex items-start cursor-pointer">
+                      <input
+                        type="radio"
+                        name="discharge-strategy"
+                        value="price-priority"
+                        checked={dischargeStrategy === 'price-priority'}
+                        onChange={(e) => setDischargeStrategy(e.target.value as DischargeStrategy)}
+                        className="mt-1 mr-2"
+                      />
+                      <div className="flex-1">
+                        <div className="text-sm font-medium text-slate-700">
+                          {DISCHARGE_STRATEGY_INFO['price-priority'].icon} {DISCHARGE_STRATEGY_INFO['price-priority'].name}
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {DISCHARGE_STRATEGY_INFO['price-priority'].description}
+                        </div>
+                      </div>
+                    </label>
+                  </div>
+                  <div className="text-[11px] text-blue-600 bg-blue-50 border border-blue-200 rounded px-2 py-1.5 mt-2">
+                    💡 尖段优先策略会在放电窗口内，优先向最高价格时段分配电量，通常可使收益提升 5-15%
                   </div>
                 </label>
                 {params.metering_mode === 'transformer_capacity' && (
@@ -3756,15 +3838,27 @@ export const StorageCyclesPage: React.FC<Props> = ({
 
           {result && (
             <div className="p-3 border rounded bg-white text-sm flex items-center justify-between gap-3">
-              <div className="text-slate-700">报表导出：</div>
-              <button
-                type="button"
-                onClick={handleExportExcel}
-                className="px-3 py-1.5 rounded bg-emerald-600 text-white text-xs md:text-sm hover:bg-emerald-700 disabled:opacity-60"
-                disabled={loading}
-              >
-                导出 Excel 详细结果
-              </button>
+              <div className="flex flex-col md:flex-row items-start md:items-center gap-2 md:gap-4">
+                <div className="text-slate-700 whitespace-nowrap">报表导出：</div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleExportBusinessExcel}
+                    className="px-3 py-1.5 rounded bg-emerald-600 text-white text-xs md:text-sm hover:bg-emerald-700 disabled:opacity-60"
+                    disabled={loading}
+                  >
+                    导出运行与收益报表（CSV，多表打包）
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportDebugExcel}
+                    className="px-3 py-1.5 rounded bg-slate-600 text-white text-xs md:text-sm hover:bg-slate-700 disabled:opacity-60"
+                    disabled={loading}
+                  >
+                    导出调试报表（详细结果）
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 
@@ -3792,4 +3886,3 @@ export const StorageCyclesPage: React.FC<Props> = ({
     </div>
   );
 };
-

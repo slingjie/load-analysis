@@ -71,6 +71,35 @@ const App: React.FC = () => {
     payload: StorageParamsPayload;
     response: BackendStorageCyclesResponse;
   } | null>(null);
+
+  // Economics 页面首年收益口径：使用 Storage Cycles 的“全年等效净收益（按月外推）”。
+  // 规则：零散缺天按月外推；整月缺失（valid_days=0）不外推（该月跳过）。
+  const lastStorageRunYearEquivProfitYuan = useMemo(() => {
+    const resp = lastStorageRun?.response;
+    if (!resp || !Array.isArray(resp.months) || resp.months.length === 0) return null;
+
+    let hasAny = false;
+    let sum = 0;
+
+    for (const m of resp.months) {
+      const ym = m?.year_month ? String(m.year_month) : '';
+      const validDays = Number(m?.valid_days ?? 0);
+      const profit = Number(m?.profit?.main?.profit ?? NaN);
+      if (!ym || validDays <= 0 || !Number.isFinite(profit)) continue;
+
+      const yearNum = Number.parseInt(ym.slice(0, 4), 10);
+      const monthNum = Number.parseInt(ym.slice(5, 7), 10);
+      if (!Number.isFinite(yearNum) || !Number.isFinite(monthNum) || monthNum < 1 || monthNum > 12) continue;
+
+      const daysInMonth = new Date(yearNum, monthNum, 0).getDate();
+      if (!Number.isFinite(daysInMonth) || daysInMonth <= 0) continue;
+
+      sum += (profit / validDays) * daysInMonth;
+      hasAny = true;
+    }
+
+    return hasAny ? sum : null;
+  }, [lastStorageRun?.response]);
   
   // --- Configuration State ---
   const [configurations, setConfigurations] = useState<{id: string, name: string}[]>([]);
@@ -1089,7 +1118,8 @@ const App: React.FC = () => {
           storageCyclesResult={lastStorageRun?.response ?? null}
           storageCyclesPayload={lastStorageRun?.payload ?? null}
         />
-      )}
+      )
+      }
       {/* Storage Cycles 页面保持挂载，避免切换时状态重置 */}
       <div className={currentPage === 'storage' ? 'p-4' : 'p-4 hidden'}>
         <StorageCyclesPage 
@@ -1107,7 +1137,7 @@ const App: React.FC = () => {
       {/* Economics 页面保持挂载，避免切换时状态重置 */}
       <div className={currentPage === 'economics' ? '' : 'hidden'}>
         <StorageEconomicsPage
-          externalFirstYearRevenue={lastStorageRun?.response?.year?.profit?.main?.profit ?? null}
+          externalFirstYearRevenue={lastStorageRunYearEquivProfitYuan}
           externalCapacityKwh={lastStorageRun?.payload?.storage?.capacity_kwh ?? null}
           externalFirstYearEnergyKwh={lastStorageRun?.response?.year?.profit?.main?.discharge_energy_kwh ?? null}
         />

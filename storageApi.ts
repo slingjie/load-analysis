@@ -9,7 +9,7 @@ import type {
   StorageEconomicsResult,
 } from './types';
 
-const BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || '').replace(/\/$/, '') || 'http://localhost:8002';
+export const BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || '').replace(/\/$/, '') || 'http://localhost:8002';
 
 export interface StorageParamsPayload {
   storage: {
@@ -133,6 +133,66 @@ export const exportStorageCyclesReport = async (
       `${response.status} ${response.statusText}` ||
       '储能次数报表导出失败，请稍后重试。';
     console.error('[storageApi] exportStorageCyclesReport failed', {
+      url,
+      status: response.status,
+      statusText: response.statusText,
+      detail,
+      payload,
+      rawText,
+    });
+    throw new Error(detail);
+  }
+
+  return result as BackendStorageCyclesResponse;
+};
+
+/**
+ * 导出“运行与收益业务报表”（CSV 多表打包 ZIP）。
+ *
+ * 与 exportStorageCyclesReport 复用同一后端接口，但额外指定
+ * export_mode=business，使后端调用新的业务报表导出函数。
+ * 后端会生成多张 CSV（如日度/月度运行统计、运行看板、逐点曲线精简），
+ * 并打包为一个 ZIP 文件返回，前端仍通过 excel_path 下载。
+ */
+export const exportStorageBusinessReport = async (
+  file: File | null,
+  payload: StorageParamsPayload,
+): Promise<BackendStorageCyclesResponse> => {
+  const formData = new FormData();
+  if (file) formData.append('file', file);
+  formData.append('payload', JSON.stringify(payload));
+  formData.append('export_excel', 'true');
+  formData.append('export_mode', 'business');
+
+  const url = `${BASE_URL}/api/storage/cycles`;
+  console.debug('[storageApi] POST export business report (csv zip)', url, { base: BASE_URL });
+
+  const response = await fetch(url, {
+    method: 'POST',
+    body: formData,
+  });
+
+  const contentType = response.headers.get('content-type') || '';
+  let result: any = null;
+  let rawText: string | null = null;
+  try {
+    if (contentType.includes('application/json')) {
+      result = await response.json().catch(() => null);
+    } else {
+      rawText = await response.text().catch(() => null);
+      try { result = rawText ? JSON.parse(rawText) : null; } catch { /* ignore */ }
+    }
+  } catch {
+    // ignore parse errors
+  }
+
+  if (!response.ok) {
+    const detail =
+      result?.detail ||
+      rawText ||
+      `${response.status} ${response.statusText}` ||
+      '运行与收益报表导出失败，请稍后重试。';
+    console.error('[storageApi] exportStorageBusinessReport failed', {
       url,
       status: response.status,
       statusText: response.statusText,
@@ -397,4 +457,68 @@ export const computeStorageEconomics = async (
   }
 
   return result as StorageEconomicsResult;
+};
+
+/**
+ * 导出多年期经济性现金流明细报表（CSV格式）
+ */
+export const exportEconomicsCashflowReport = async (
+  input: StorageEconomicsInput,
+  userSharePercent: number = 0,
+): Promise<{ excel_path: string; message: string }> => {
+  const url = `${BASE_URL}/api/storage/economics/export`;
+  const requestBody = {
+    ...input,
+    user_share_percent: userSharePercent,
+  };
+  
+  console.debug('[storageApi] POST storage/economics/export', url, requestBody);
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestBody),
+  });
+
+  const contentType = response.headers.get('content-type') || '';
+  let result: any = null;
+  let rawText: string | null = null;
+  try {
+    if (contentType.includes('application/json')) {
+      result = await response.json().catch(() => null);
+    } else {
+      rawText = await response.text().catch(() => null);
+      try { result = rawText ? JSON.parse(rawText) : null; } catch { /* ignore */ }
+    }
+  } catch (e) {
+    // ignore parse errors
+  }
+
+  if (!response.ok) {
+    // 对于422错误，显示详细的验证错误信息
+    let errorMsg = '';
+    if (response.status === 422 && result?.detail) {
+      if (Array.isArray(result.detail)) {
+        // FastAPI验证错误格式
+        errorMsg = result.detail.map((err: any) => 
+          `${err.loc?.join('.') || 'unknown'}: ${err.msg}`
+        ).join('; ');
+      } else {
+        errorMsg = typeof result.detail === 'string' ? result.detail : JSON.stringify(result.detail);
+      }
+    } else {
+      errorMsg = result?.detail || rawText || `${response.status} ${response.statusText}` || '报表生成失败';
+    }
+    
+    console.error('[storageApi] exportEconomicsCashflowReport failed', { 
+      url, 
+      status: response.status, 
+      error: errorMsg,
+      requestBody,
+      responseDetail: result 
+    });
+    throw new Error(errorMsg);
+  }
+
+  return result as { excel_path: string; message: string };
 };

@@ -9,7 +9,7 @@
 
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import type { StorageEconomicsInput, StorageEconomicsResult, YearlyCashflowItem, StaticEconomicsMetrics } from '../types';
-import { computeStorageEconomics } from '../storageApi';
+import { computeStorageEconomics, exportEconomicsCashflowReport, BASE_URL } from '../storageApi';
 
 // 动态加载 ECharts（CDN），避免本地依赖
 const loadECharts = (): Promise<any> => {
@@ -350,18 +350,11 @@ export const StorageEconomicsPage: React.FC<StorageEconomicsPageProps> = ({
             phaseStartYear = yearIndex;
           }
 
-          const yearsInPhase = yearIndex - phaseStartYear;
-          let energyThisYear: number;
-          if (yearsInPhase === 0) {
-            energyThisYear = currentBaseEnergy;
-          } else if (yearsInPhase === 1) {
-            energyThisYear = currentBaseEnergy * (1 - parsedFirstYearDecayRate);
-          } else {
-            energyThisYear =
-              currentBaseEnergy *
-              (1 - parsedFirstYearDecayRate) *
-              Math.pow(1 - parsedSubsequentDecayRate, yearsInPhase - 1);
-          }
+          const yearsInPhase = yearIndex - phaseStartYear; // 0 表示阶段首年
+          const energyThisYear =
+            currentBaseEnergy *
+            (1 - parsedFirstYearDecayRate) *
+            Math.pow(1 - parsedSubsequentDecayRate, yearsInPhase);
 
           energySeries.push(energyThisYear);
         }
@@ -374,6 +367,87 @@ export const StorageEconomicsPage: React.FC<StorageEconomicsPageProps> = ({
       setError(err instanceof Error ? err.message : '计算失败，请稍后重试');
     } finally {
       setIsCalculating(false);
+    }
+  }, [
+    isFormValid,
+    firstYearRevenue,
+    userSharePercent,
+    firstYearEnergyKwh,
+    projectYears,
+    annualOmCost,
+    firstYearDecayRate,
+    subsequentDecayRate,
+    capexPerWh,
+    installedCapacityKwh,
+    cellReplacementCost,
+    cellReplacementYear,
+  ]);
+
+  // ==================== 导出报表 ====================
+  const [isExporting, setIsExporting] = useState(false);
+
+  const handleExportReport = useCallback(async () => {
+    if (!isFormValid) return;
+
+    setIsExporting(true);
+    setError(null);
+
+    try {
+      const parsedFirstYearRevenue = parseFloat(firstYearRevenue);
+      const parsedUserSharePercent = userSharePercent === '' ? 0 : parseFloat(userSharePercent);
+      const normalizedShare = Number.isFinite(parsedUserSharePercent) ? Math.min(Math.max(parsedUserSharePercent, 0), 100) : 0;
+      const parsedFirstYearEnergyKwh = firstYearEnergyKwh ? parseFloat(firstYearEnergyKwh) : null;
+      const parsedProjectYears = parseInt(projectYears, 10);
+      const parsedAnnualOmCost = annualOmCost ? parseFloat(annualOmCost) : 0;
+      const parsedFirstYearDecayRate = parseFloat(firstYearDecayRate) / 100;
+      const parsedSubsequentDecayRate = parseFloat(subsequentDecayRate) / 100;
+      const parsedCapexPerWh = parseFloat(capexPerWh);
+      const parsedInstalledCapacityKwh = parseFloat(installedCapacityKwh);
+      const parsedCellReplacementCost = cellReplacementCost ? parseFloat(cellReplacementCost) : null;
+      const parsedCellReplacementYear = cellReplacementYear ? parseInt(cellReplacementYear, 10) : null;
+
+      // 将 Storage Cycles 的"首年总净收益"按分成比例折算为"项目方首年净收益"
+      const projectFirstYearRevenue = parsedFirstYearRevenue * (1 - normalizedShare / 100);
+
+      const input: StorageEconomicsInput = {
+        first_year_revenue: projectFirstYearRevenue,
+        project_years: parsedProjectYears,
+        annual_om_cost: parsedAnnualOmCost,
+        first_year_decay_rate: parsedFirstYearDecayRate,
+        subsequent_decay_rate: parsedSubsequentDecayRate,
+        capex_per_wh: parsedCapexPerWh,
+        installed_capacity_kwh: parsedInstalledCapacityKwh,
+      };
+      
+      // 可选参数：只在有值时添加
+      if (parsedFirstYearEnergyKwh !== null && parsedFirstYearEnergyKwh > 0) {
+        input.first_year_energy_kwh = parsedFirstYearEnergyKwh;
+      }
+      if (parsedCellReplacementCost !== null && parsedCellReplacementCost > 0) {
+        input.cell_replacement_cost = parsedCellReplacementCost;
+      }
+      if (parsedCellReplacementYear !== null && parsedCellReplacementYear > 0) {
+        input.cell_replacement_year = parsedCellReplacementYear;
+      }
+
+      const response = await exportEconomicsCashflowReport(input, normalizedShare);
+      
+      // 构造完整的下载 URL
+      const downloadUrl = `${BASE_URL}/outputs/${response.excel_path}`;
+      
+      // 触发浏览器下载
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = response.excel_path; // 使用原始文件名
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      console.log(`[StorageEconomicsPage] 报表导出成功: ${downloadUrl}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '报表导出失败，请稍后重试');
+    } finally {
+      setIsExporting(false);
     }
   }, [
     isFormValid,
@@ -431,18 +505,12 @@ export const StorageEconomicsPage: React.FC<StorageEconomicsPageProps> = ({
           phaseStartYear = yearIndex;
         }
 
-        const yearsInPhase = yearIndex - phaseStartYear;
-        let yearRevenueTotal: number;
-        if (yearsInPhase === 0) {
-          yearRevenueTotal = currentBaseRevenue;
-        } else if (yearsInPhase === 1) {
-          yearRevenueTotal = currentBaseRevenue * (1 - parsedFirstYearDecayRate);
-        } else {
-          yearRevenueTotal =
-            currentBaseRevenue *
-            (1 - parsedFirstYearDecayRate) *
-            Math.pow(1 - parsedSubsequentDecayRate, yearsInPhase - 1);
-        }
+        const yearsInPhase = yearIndex - phaseStartYear; // 0 表示阶段首年
+        const yearRevenueTotal =
+          currentBaseRevenue *
+          (1 - parsedFirstYearDecayRate) *
+          Math.pow(1 - parsedSubsequentDecayRate, yearsInPhase);
+
         totalRevenues.push(yearRevenueTotal);
       }
 
@@ -489,14 +557,10 @@ export const StorageEconomicsPage: React.FC<StorageEconomicsPageProps> = ({
     }
 
     let totalEnergy = 0;
-    let energyCurrent = parsedFirstYearEnergyKwh;
+    let energyCurrent = parsedFirstYearEnergyKwh * (1 - parsedFirstYearDecayRate); // 首年即包含首年衰减
     for (let yearIndex = 1; yearIndex <= parsedProjectYears; yearIndex += 1) {
       totalEnergy += energyCurrent;
-      if (yearIndex === 1) {
-        energyCurrent *= (1 - parsedFirstYearDecayRate);
-      } else {
-        energyCurrent *= (1 - parsedSubsequentDecayRate);
-      }
+      energyCurrent *= (1 - parsedSubsequentDecayRate);
     }
     const annualEnergyLocal = totalEnergy / parsedProjectYears;
     if (!Number.isFinite(annualEnergyLocal) || annualEnergyLocal <= 0) return m;
@@ -541,7 +605,7 @@ export const StorageEconomicsPage: React.FC<StorageEconomicsPageProps> = ({
           <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg">
             <p className="text-sm text-green-800">
               <span className="font-semibold">✓ 已自动填入 Storage Cycles 测算数据：</span>
-              {externalFirstYearRevenue != null && ` 首年收益 ${externalFirstYearRevenue.toLocaleString()} 元`}
+              {externalFirstYearRevenue != null && ` 首年收益（全年等效净收益，按月外推） ${externalFirstYearRevenue.toLocaleString()} 元`}
               {externalFirstYearRevenue != null && externalCapacityKwh != null && '，'}
               {externalCapacityKwh != null && ` 储能容量 ${externalCapacityKwh} kWh`}
               {(externalFirstYearRevenue != null || externalCapacityKwh != null) && externalFirstYearEnergyKwh != null && '，'}
@@ -577,7 +641,7 @@ export const StorageEconomicsPage: React.FC<StorageEconomicsPageProps> = ({
             />
             <p className="text-xs text-slate-500 mt-1">
               {externalFirstYearRevenue != null 
-                ? '已自动填入 Storage Cycles 计算的年度收益（已扣充电费、未扣运维）'
+                ? '已自动填入 Storage Cycles 的全年等效净收益（按月外推，已扣充电费、未扣运维）'
                 : '已扣除充电电费、未扣运维成本'}
             </p>
           </div>
@@ -786,6 +850,17 @@ export const StorageEconomicsPage: React.FC<StorageEconomicsPageProps> = ({
             }`}
           >
             {isCalculating ? '计算中...' : '开始测算'}
+          </button>
+          <button
+            onClick={handleExportReport}
+            disabled={!isFormValid || isExporting}
+            className={`px-6 py-2 rounded-md font-semibold text-white transition-colors ${
+              isFormValid && !isExporting
+                ? 'bg-green-600 hover:bg-green-700'
+                : 'bg-slate-400 cursor-not-allowed'
+            }`}
+          >
+            {isExporting ? '导出中...' : '导出经济性报表'}
           </button>
           {error && <span className="text-red-600 text-sm">{error}</span>}
         </div>

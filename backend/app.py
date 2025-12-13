@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 import pandas as pd
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .schemas import (
     CleanedPoint,
@@ -65,6 +66,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 挂载 outputs 目录用于下载导出报表（CSV/ZIP 等）
+app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
 
 
 @app.post("/api/load/analyze", response_model=LoadAnalysisResponse)
@@ -399,8 +403,15 @@ async def compute_storage_cycles(
     file: UploadFile | None = File(None),
     payload: str = Form(...),
     export_excel: bool = Form(False),
+    export_mode: str = Form("debug"),
 ) -> StorageCyclesResponse:
-    """储能等效满充满放次数 + 收益 + 质量指标"""
+    """储能等效满充满放次数 + 收益 + 质量指标.
+
+    当 ``export_excel=True`` 时，后端会在完成测算的基础上按需导出 Excel 报表。
+    为保持向后兼容：
+    - 旧版前端只传 ``export_excel=true``，默认导出“详细调试报表”（原有行为保持不变）；
+    - 新版前端可通过额外的表单字段 ``export_mode=business|debug`` 指定导出报表类型。
+    """
 
     filename: str | None = None
     file_bytes: bytes | None = None
@@ -496,6 +507,11 @@ async def compute_storage_cycles(
         logger.exception("window_avg compute failed: %s", exc)
         days_raw, window_debug = [], []
 
+    # 获取放电策略（新增参数）
+    discharge_strategy = storage_cfg.get("discharge_strategy", "sequential") or "sequential"
+    if discharge_strategy not in ("sequential", "price-priority"):
+        discharge_strategy = "sequential"
+    
     # 基于 step_15min 的收益汇总
     try:
         if daily_ops and not price_series.empty:
@@ -507,6 +523,7 @@ async def compute_storage_cycles(
                 price_series=price_series,
                 energy_formula=energy_formula,
                 window_debug=window_debug,
+                discharge_strategy=discharge_strategy,
             )
         else:
             profit_summary = {"days": {}, "months": {}, "year": None}
@@ -719,28 +736,55 @@ async def compute_storage_cycles(
                     row[keyh] = ops[h] if h < len(ops) else None
                 ops_rows.append(row)
 
-            xlsx_path, summary_csv_path = cycles_svc.export_excel_report(
-                out_dir,
-                source_filename=filename or "points_payload",
-                days=[d.model_dump() for d in days],
-                months=[{"year_month": m.year_month, "cycles": m.cycles} for m in months],
-                year={"year": year_summary.year, "cycles": year_summary.cycles},
-                monthly_prices=monthly_prices if isinstance(monthly_prices, list) else None,
-                limit_info=limit_info,
-                qc_dict=qc.model_dump(),
-                window_debug=window_debug,
-                ops_by_hour=ops_rows,
-                runs_debug=runs_debug,
-                profit_summary=profit_summary,
-                step15_df=step15_df,
-                energy_formula=energy_formula,
-            )
-            excel_rel = str(xlsx_path.as_posix())
-            if summary_csv_path:
+            # 根据导出模式选择报表类型：
+            # - business: 运行与收益业务报表（多 Sheet，面向汇报与复用）；
+            # - 其他/默认: 详细调试报表（原有结构，包含 window_debug 等）。
+            mode = (export_mode or "debug").strip().lower()
+            if mode == "business":
+                xlsx_path = cycles_svc.export_business_report(
+                    out_dir,
+                    source_filename=filename or "points_payload",
+                    days=[d.model_dump() for d in days],
+                    months=[{"year_month": m.year_month, "cycles": m.cycles} for m in months],
+                    year={"year": year_summary.year, "cycles": year_summary.cycles},
+                    profit_summary=profit_summary,
+                    step15_df=step15_df,
+                    window_debug=window_debug,
+                    energy_formula=energy_formula,
+                )
+                # 转换为可通过 /outputs 静态路径访问的相对 URL
                 try:
-                    qc.notes.append(f"summary csv: {summary_csv_path.as_posix()}")
+                    rel = xlsx_path.relative_to(_Path("outputs"))
+                    excel_rel = f"/outputs/{rel.as_posix()}"
                 except Exception:
-                    pass
+                    excel_rel = f"/outputs/{xlsx_path.name}"
+            else:
+                xlsx_path, summary_csv_path = cycles_svc.export_excel_report(
+                    out_dir,
+                    source_filename=filename or "points_payload",
+                    days=[d.model_dump() for d in days],
+                    months=[{"year_month": m.year_month, "cycles": m.cycles} for m in months],
+                    year={"year": year_summary.year, "cycles": year_summary.cycles},
+                    monthly_prices=monthly_prices if isinstance(monthly_prices, list) else None,
+                    limit_info=limit_info,
+                    qc_dict=qc.model_dump(),
+                    window_debug=window_debug,
+                    ops_by_hour=ops_rows,
+                    runs_debug=runs_debug,
+                    profit_summary=profit_summary,
+                    step15_df=step15_df,
+                    energy_formula=energy_formula,
+                )
+                try:
+                    rel = xlsx_path.relative_to(_Path("outputs"))
+                    excel_rel = f"/outputs/{rel.as_posix()}"
+                except Exception:
+                    excel_rel = f"/outputs/{xlsx_path.name}"
+                if summary_csv_path:
+                    try:
+                        qc.notes.append(f"summary csv: {summary_csv_path.as_posix()}")
+                    except Exception:
+                        pass
         except Exception as exc:  # pragma: no cover
             logger.exception("export excel failed: %s", exc)
             excel_rel = None
@@ -1155,3 +1199,110 @@ async def compute_storage_economics(
         yearly_cashflows=yearly_cashflows,
         static_metrics=static_metrics,
     )
+
+
+@app.post("/api/storage/economics/export")
+async def export_economics_cashflow_report(
+    body: dict = Body(...),
+) -> Dict[str, Any]:
+    """
+    导出多年期经济性现金流明细报表（CSV格式）
+    
+    与 /api/storage/economics 接口参数相同，但返回报表下载地址而非JSON结果。
+    
+    请求体包含：
+    - StorageEconomicsInput 的所有字段
+    - user_share_percent: 用户收益分成比例（0-100），用于计算原年度总收益
+    
+    返回：
+    - excel_path: 报表文件下载路径（相对于 /outputs）
+    """
+    logger.info(
+        "[economics export API] received body keys: %s",
+        list(body.keys()),
+    )
+    
+    # 提取user_share_percent，默认0
+    user_share_percent = body.pop('user_share_percent', 0.0)
+    
+    # 将剩余参数解析为StorageEconomicsInput
+    try:
+        request = StorageEconomicsInput(**body)
+    except Exception as e:
+        logger.exception("Invalid request parameters")
+        logger.error("Request body: %s", body)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"参数解析失败: {str(e)}",
+        ) from e
+    
+    logger.info(
+        "[economics export API] received: first_year_revenue=%s, project_years=%s, capacity=%s kWh, user_share=%s%%",
+        request.first_year_revenue,
+        request.project_years,
+        request.installed_capacity_kwh,
+        user_share_percent,
+    )
+    
+    try:
+        # 计算经济性结果（与上面相同）
+        actual_annual_om_cost = (request.annual_om_cost * request.installed_capacity_kwh) / 10
+        actual_cell_replacement_cost = None
+        if request.cell_replacement_cost is not None:
+            actual_cell_replacement_cost = (request.cell_replacement_cost * request.installed_capacity_kwh) / 10
+        
+        result = economics_svc.compute_economics(
+            first_year_revenue=request.first_year_revenue,
+            project_years=request.project_years,
+            annual_om_cost=actual_annual_om_cost,
+            first_year_decay_rate=request.first_year_decay_rate,
+            subsequent_decay_rate=request.subsequent_decay_rate,
+            capex_per_wh=request.capex_per_wh,
+            installed_capacity_kwh=request.installed_capacity_kwh,
+            first_year_energy_kwh=request.first_year_energy_kwh,
+            cell_replacement_year=request.cell_replacement_year,
+            cell_replacement_cost=actual_cell_replacement_cost,
+            second_phase_first_year_revenue=request.second_phase_first_year_revenue,
+        )
+        
+        # 计算各年度放电量（kWh）
+        yearly_discharge_energy_kwh = None
+        if request.first_year_energy_kwh and request.first_year_energy_kwh > 0:
+            yearly_discharge_energy_kwh = []
+            current_base_energy = request.first_year_energy_kwh
+            phase_start_year = 1
+            
+            for year_index in range(1, request.project_years + 1):
+                # 换电芯年份视为新阶段首年：放电量重置为首年水平
+                if request.cell_replacement_year and year_index == request.cell_replacement_year:
+                    current_base_energy = request.first_year_energy_kwh
+                    phase_start_year = year_index
+                
+                years_in_phase = year_index - phase_start_year  # 0 表示阶段首年
+                energy_this_year = (
+                    current_base_energy *
+                    (1 - request.first_year_decay_rate) *
+                    pow(1 - request.subsequent_decay_rate, years_in_phase)
+                )
+                yearly_discharge_energy_kwh.append(energy_this_year)
+        
+        # 导出报表
+        zip_filename = economics_svc.export_economics_cashflow_report(
+            result=result,
+            user_share_percent=user_share_percent,
+            yearly_discharge_energy_kwh=yearly_discharge_energy_kwh,
+        )
+        
+        logger.info("[economics export API] report generated: %s", zip_filename)
+        
+        return {
+            "excel_path": zip_filename,  # 前端会拼接 /outputs/ 前缀
+            "message": "经济性现金流报表生成成功"
+        }
+        
+    except Exception as exc:
+        logger.exception("economics export failed")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"报表生成失败: {str(exc)}",
+        ) from exc

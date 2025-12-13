@@ -348,6 +348,10 @@ export interface ComparisonResult {
   };
 }
 
+// ==================== 放电策略类型 ====================
+
+export type DischargeStrategy = 'sequential' | 'price-priority';
+
 // ==================== 储能经济性测算相关类型 ====================
 
 // 经济性测算输入参数

@@ -8,6 +8,10 @@
 from __future__ import annotations
 
 import math
+import csv
+import os
+import zipfile
+from datetime import datetime
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -62,10 +66,11 @@ def build_cashflows(
         cell_replacement_cost: 电芯更换成本，可选
         second_phase_first_year_revenue: 更换后新的首年收益 R′₁，可选，默认与 R₁ 相同
 
-    衰减计算逻辑:
-        - 第1年: R₁ (无衰减)
-        - 第2年: R₁ × (1 - first_year_decay_rate)
-        - 第3年及以后: 基于上一年收益 × (1 - subsequent_decay_rate)
+        衰减计算逻辑（按阶段，含首年衰减）:
+                - 每个阶段的"首年"（含项目第 1 年和更换电芯当年）均视为已发生首年衰减:
+                    R₁,eff = R₁ × (1 - first_year_decay_rate)
+                - 阶段内第 t 年的收益为:
+                    R_t = R₁,eff × (1 - subsequent_decay_rate)^(t-1)
 
     返回:
         List[YearlyCashflowItem]: 长度为 project_years 的年度现金流列表
@@ -93,18 +98,13 @@ def build_cashflows(
             replacement = 0.0
 
         # 计算当年收益（考虑衰减）
-        years_in_phase = t - phase_start_year  # 距离阶段开始的年数
-        
-        if years_in_phase == 0:
-            # 阶段首年，无衰减
-            year_revenue = current_base_revenue
-        elif years_in_phase == 1:
-            # 阶段第二年，应用首年衰减率
-            year_revenue = current_base_revenue * (1 - first_year_decay_rate)
-        else:
-            # 阶段第三年及以后，应用后续年份衰减率
-            # 收益 = 基准 × (1 - 首年衰减率) × (1 - 后续衰减率)^(years_in_phase - 1)
-            year_revenue = current_base_revenue * (1 - first_year_decay_rate) * ((1 - subsequent_decay_rate) ** (years_in_phase - 1))
+        years_in_phase = t - phase_start_year  # 距离阶段开始的年数（0 表示阶段首年）
+
+        # 所有年份均视为已包含首年衰减：
+        # R_t = R₁ × (1 - first_year_decay_rate) × (1 - subsequent_decay_rate)^years_in_phase
+        year_revenue = current_base_revenue * (1 - first_year_decay_rate) * (
+            (1 - subsequent_decay_rate) ** years_in_phase
+        )
 
         net_cf = year_revenue - annual_om_cost - replacement
         cumulative += net_cf
@@ -461,3 +461,122 @@ def compute_static_metrics(
         'screening_result': screening_result,
         'pass_threshold': pass_threshold,
     }
+
+
+def export_economics_cashflow_report(
+    result: EconomicsResult,
+    user_share_percent: float = 0.0,
+    yearly_discharge_energy_kwh: Optional[List[float]] = None,
+    output_dir: str = "outputs",
+    filename_prefix: str = "经济性现金流报表"
+) -> str:
+    """
+    导出多年期经济性现金流明细报表（CSV格式）
+    
+    Args:
+        result: 经济性测算结果对象
+        user_share_percent: 用户收益分成比例（0-100）
+        yearly_discharge_energy_kwh: 各年度储能放电量（kWh）列表，长度应与项目年限一致
+        output_dir: 输出目录
+        filename_prefix: 文件名前缀
+    
+    Returns:
+        生成的ZIP文件路径（相对于outputs目录）
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_filename = f"{filename_prefix}_{timestamp}.zip"
+    zip_path = os.path.join(output_dir, zip_filename)
+    
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        # 1. 年度现金流明细表
+        cashflow_csv = f"年度现金流明细_{timestamp}.csv"
+        cashflow_path = os.path.join(output_dir, cashflow_csv)
+        
+        with open(cashflow_path, 'w', newline='', encoding='utf-8-sig') as f:
+            writer = csv.writer(f)
+            # 表头
+            writer.writerow([
+                '年份',
+                '原年度总收益(元)',
+                '用户方年度收益(元)',
+                '项目方年度收益(元)',
+                '储能放电量(kWh)',
+                '运维成本(元)',
+                '电芯更换成本(元)',
+                '年度净现金流(元)',
+                '累计净现金流(元)'
+            ])
+            
+            # 计算用户分成比例（0-1）
+            share_ratio = user_share_percent / 100.0 if user_share_percent else 0.0
+            
+            # 数据行
+            for idx, item in enumerate(result.yearly_cashflows):
+                # 项目方年度收益（result中存储的就是项目方的）
+                project_revenue = item.year_revenue
+                # 反推原年度总收益：项目方收益 / (1 - 分成比例)
+                total_revenue = project_revenue / (1 - share_ratio) if share_ratio < 1.0 else project_revenue
+                # 用户方年度收益
+                user_revenue = total_revenue * share_ratio
+                # 储能放电量
+                discharge_kwh = yearly_discharge_energy_kwh[idx] if yearly_discharge_energy_kwh and idx < len(yearly_discharge_energy_kwh) else 0.0
+                
+                writer.writerow([
+                    item.year_index,
+                    round(total_revenue, 2),
+                    round(user_revenue, 2),
+                    round(project_revenue, 2),
+                    round(discharge_kwh, 2),
+                    round(item.annual_om_cost, 2),
+                    round(item.cell_replacement_cost, 2),
+                    round(item.net_cashflow, 2),
+                    round(item.cumulative_net_cashflow, 2)
+                ])
+        
+        zipf.write(cashflow_path, cashflow_csv)
+        os.remove(cashflow_path)
+        
+        # 2. 经济性指标汇总表
+        summary_csv = f"经济性指标汇总_{timestamp}.csv"
+        summary_path = os.path.join(output_dir, summary_csv)
+        
+        with open(summary_path, 'w', newline='', encoding='utf-8-sig') as f:
+            writer = csv.writer(f)
+            writer.writerow(['指标名称', '数值', '单位'])
+            writer.writerow(['总投资(CAPEX)', round(result.capex_total, 2), '元'])
+            writer.writerow([
+                '内部收益率(IRR)', 
+                f"{round(result.irr * 100, 2)}%" if result.irr is not None else '无法收敛',
+                '-'
+            ])
+            writer.writerow([
+                '静态回收期', 
+                f"{round(result.static_payback_years, 2)}年" if result.static_payback_years is not None else '超出项目周期',
+                '-'
+            ])
+            writer.writerow([
+                '项目末累计净现金流', 
+                round(result.final_cumulative_net_cashflow, 2), 
+                '元'
+            ])
+            
+            # 可选指标（如果存在）
+            if result.static_lcoe is not None:
+                writer.writerow(['静态平均度电成本(LCOE)', round(result.static_lcoe, 4), '元/kWh'])
+            if result.annual_energy_kwh is not None:
+                writer.writerow(['年均发电能量', round(result.annual_energy_kwh, 2), 'kWh'])
+            if result.annual_revenue_yuan is not None:
+                writer.writerow(['年均收益', round(result.annual_revenue_yuan, 2), '元'])
+            if result.revenue_per_kwh is not None:
+                writer.writerow(['度电平均收益', round(result.revenue_per_kwh, 4), '元/kWh'])
+            if result.lcoe_ratio is not None:
+                writer.writerow(['经济可行性比值', round(result.lcoe_ratio, 4), '-'])
+            if result.screening_result is not None:
+                writer.writerow(['筛选结论', result.screening_result, '-'])
+        
+        zipf.write(summary_path, summary_csv)
+        os.remove(summary_path)
+    
+    # 返回相对路径（用于前端下载）
+    return zip_filename

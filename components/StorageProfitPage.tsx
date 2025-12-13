@@ -6,11 +6,12 @@ import type {
   BackendStorageCyclesResponse,
   BackendStorageCurvesResponse,
   BackendStorageProfitWithFormulas,
+  DischargeStrategy,
 } from '../types';
 import type { LoadDataPoint } from '../utils';
 import { fetchStorageCurves, computeStorageCycles, type StorageParamsPayload } from '../storageApi';
 import { EChartTimeSeries } from './EChartTimeSeries';
-import { TIER_DEFINITIONS } from '../constants';
+import { TIER_DEFINITIONS, DISCHARGE_STRATEGY_INFO } from '../constants';
 
 // 复用 ECharts 按需加载逻辑（与 EChartTimeSeries 保持一致）
 const loadECharts = (): Promise<any> => {
@@ -281,6 +282,7 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
       discharge: number;
       charge: number;
       profit: number;
+      profitEquiv: number | null;
       profitPerKwh: number | null;
     }[] = [];
 
@@ -309,6 +311,21 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
       const label = Number.isFinite(monthNumber)
         ? `${monthNumber}月`
         : ym || `${index + 1}月`;
+
+      const validDays = Number((m as any)?.valid_days ?? 0);
+      const yStr = ym.length >= 4 ? ym.slice(0, 4) : '';
+      const monthStr = ym.length >= 7 ? ym.slice(5, 7) : '';
+      const yearNum = Number.parseInt(yStr || '0', 10);
+      const monthNum = Number.parseInt(monthStr || '0', 10);
+      const daysInMonth =
+        yearNum > 0 && monthNum >= 1 && monthNum <= 12
+          ? new Date(yearNum, monthNum, 0).getDate()
+          : null;
+      const profitVal = main.profit ?? 0;
+      const profitEquiv =
+        validDays > 0 && daysInMonth != null
+          ? (profitVal / validDays) * daysInMonth
+          : null;
       rows.push({
         key: ym || String(index + 1),
         label,
@@ -316,7 +333,8 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
         cost: main.cost ?? 0,
         discharge: main.discharge_energy_kwh ?? 0,
         charge: main.charge_energy_kwh ?? 0,
-        profit: main.profit ?? 0,
+        profit: profitVal,
+        profitEquiv,
         profitPerKwh:
           main.profit_per_kwh != null ? main.profit_per_kwh : null,
       });
@@ -325,6 +343,10 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
     const yearMain = cyclesResult.year?.profit?.main;
     if (yearMain) {
       const yearLabel = '全年';
+      const monthEquivSum = rows
+        .filter((r) => r.key !== 'year')
+        .reduce((sum, r) => sum + (r.profitEquiv ?? 0), 0);
+      const yearHasAnyEquiv = rows.some((r) => r.key !== 'year' && r.profitEquiv != null);
       rows.push({
         key: 'year',
         label: yearLabel,
@@ -333,6 +355,7 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
         discharge: yearMain.discharge_energy_kwh ?? 0,
         charge: yearMain.charge_energy_kwh ?? 0,
         profit: yearMain.profit ?? 0,
+        profitEquiv: yearHasAnyEquiv ? monthEquivSum : null,
         profitPerKwh:
           yearMain.profit_per_kwh != null ? yearMain.profit_per_kwh : null,
       });
@@ -340,6 +363,11 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
 
     return rows;
   }, [cyclesResult]);
+
+  const yearProfitEquivYuan: number | null = useMemo(() => {
+    const row = monthlySummaryRows.find((r) => r.key === 'year');
+    return row?.profitEquiv ?? null;
+  }, [monthlySummaryRows]);
 
   // 在同一张图中展示两条曲线，并支持开关控制显示/隐藏
   const combinedChartRef = useRef<HTMLDivElement | null>(null);
@@ -609,10 +637,47 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
       <div id="section-profit-intro" className="scroll-mt-24 p-4 bg-white rounded-xl shadow-sm border border-slate-200 space-y-3">
         <h2 className="text-lg font-semibold text-slate-800">储能收益与负荷对比</h2>
         <p className="text-sm text-slate-600">
-          本页基于与储能次数计算相同的 TOU 配置与负荷数据，按日查看“引入储能前后”的负荷曲线与收益指标。
+          本页基于与储能次数计算相同的 TOU 配置与负荷数据，按日查看"引入储能前后"的负荷曲线与收益指标。
           当前实现使用一组默认的储能参数进行演示，如需与实际项目严格对齐，可在后续迭代中将参数从 StorageCycles 页透传进来。
         </p>
       </div>
+
+      {storageCyclesPayload?.storage && (
+        <div id="section-config-snapshot" className="scroll-mt-24 p-4 bg-slate-50 rounded-xl shadow-sm border border-slate-200">
+          <h3 className="text-sm font-semibold text-slate-800 mb-3">计算配置快照</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs text-slate-700">
+            <div>
+              <span className="text-slate-500">电池容量：</span>
+              <span className="font-medium">{storageCyclesPayload.storage.capacity_kwh} kWh</span>
+            </div>
+            <div>
+              <span className="text-slate-500">C倍率：</span>
+              <span className="font-medium">{storageCyclesPayload.storage.c_rate}</span>
+            </div>
+            <div>
+              <span className="text-slate-500">充放电效率：</span>
+              <span className="font-medium">{(storageCyclesPayload.storage.efficiency * 100).toFixed(0)}%</span>
+            </div>
+            <div>
+              <span className="text-slate-500">DoD：</span>
+              <span className="font-medium">{(storageCyclesPayload.storage.dod * 100).toFixed(0)}%</span>
+            </div>
+            {storageCyclesPayload.storage.discharge_strategy && (
+              <div className="col-span-2 md:col-span-4 pt-2 border-t border-slate-200">
+                <span className="text-slate-500">放电策略：</span>
+                <span className="font-medium ml-1">
+                  {DISCHARGE_STRATEGY_INFO[storageCyclesPayload.storage.discharge_strategy as keyof typeof DISCHARGE_STRATEGY_INFO]?.icon || ''}
+                  {' '}
+                  {DISCHARGE_STRATEGY_INFO[storageCyclesPayload.storage.discharge_strategy as keyof typeof DISCHARGE_STRATEGY_INFO]?.name || storageCyclesPayload.storage.discharge_strategy}
+                </span>
+                <span className="text-slate-500 ml-2 text-[11px]">
+                  ({DISCHARGE_STRATEGY_INFO[storageCyclesPayload.storage.discharge_strategy as keyof typeof DISCHARGE_STRATEGY_INFO]?.description || ''})
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {(selectedDayProfitMain || monthProfitMain || yearProfitMain) && (
         <div
@@ -652,6 +717,9 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
                 {yearProfitMain.profit.toFixed(2)} 元
               </div>
               <div className="mt-1 text-xs text-slate-700">
+                全年等效净收益（按月外推）：{yearProfitEquivYuan != null ? yearProfitEquivYuan.toFixed(2) : '--'} 元
+              </div>
+              <div className="mt-1 text-xs text-slate-700">
                 日度电收益：{yearProfitMain.profit_per_kwh.toFixed(3)} 元/kWh
               </div>
             </div>
@@ -673,6 +741,7 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
                   <th className="px-2 py-1 text-right">放电电量 (kWh)</th>
                   <th className="px-2 py-1 text-right">充电电量 (kWh)</th>
                   <th className="px-2 py-1 text-right">净收益 (元)</th>
+                  <th className="px-2 py-1 text-right">等效净收益 (元)</th>
                   <th className="px-2 py-1 text-right">日度电收益 (元/kWh)</th>
                 </tr>
               </thead>
@@ -683,6 +752,9 @@ export const StorageProfitPage: React.FC<StorageProfitPageProps> = ({
                     <td className="px-2 py-1 text-right">{row.discharge.toFixed(1)}</td>
                     <td className="px-2 py-1 text-right">{row.charge.toFixed(1)}</td>
                     <td className="px-2 py-1 text-right">{row.profit.toFixed(2)}</td>
+                    <td className="px-2 py-1 text-right">
+                      {row.profitEquiv != null ? row.profitEquiv.toFixed(2) : '--'}
+                    </td>
                     <td className="px-2 py-1 text-right">
                       {row.profitPerKwh != null ? row.profitPerKwh.toFixed(3) : '--'}
                     </td>
