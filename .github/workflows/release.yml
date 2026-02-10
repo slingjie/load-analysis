@@ -51,8 +51,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__ # 使用 package.json 中的版本号
-          releaseName: "TOU Schedule Editor v__VERSION__"
-          releaseBody: "Automated high-performance desktop build."
-          releaseDraft: true
+          tagName: ${{ github.ref_name }} # 使用触发工作流的实际标签名
+          releaseName: "TOU Schedule Editor ${{ github.ref_name }}"
+          releaseBody: "Automated desktop build for ${{ github.ref_name }}."
+          releaseDraft: false
           prerelease: false
