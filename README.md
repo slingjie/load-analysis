@@ -398,6 +398,7 @@ npm install
 ## 👥 联系方式
 
 - 项目作者：[@slingjie](https://github.com/slingjie)
+- wechat：slingjie
 - 项目地址：https://github.com/slingjie/load-analysis
 - Issue 反馈：https://github.com/slingjie/load-analysis/issues
 
