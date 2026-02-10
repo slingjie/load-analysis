@@ -32,11 +32,11 @@ TARGET_NAME = "backend-server-x86_64-pc-windows-msvc"
 
 
 def main():
-    print(f"[build_backend] 项目根目录: {ROOT}")
-    print(f"[build_backend] 入口脚本: {ENTRY}")
+    print(f"[build_backend] Project Root: {ROOT}")
+    print(f"[build_backend] Entry Script: {ENTRY}")
 
     if not ENTRY.exists():
-        print(f"[ERROR] 入口脚本不存在: {ENTRY}")
+        print(f"[ERROR] Entry script not found: {ENTRY}")
         sys.exit(1)
 
     # 确保输出目录存在
@@ -81,26 +81,26 @@ def main():
         str(ENTRY),
     ]
 
-    print(f"[build_backend] 执行: {' '.join(cmd)}")
+    print(f"[build_backend] Executing: {' '.join(cmd)}")
     result = subprocess.run(cmd, cwd=str(ROOT))
 
     if result.returncode != 0:
-        print(f"[ERROR] PyInstaller 打包失败 (exit code {result.returncode})")
+        print(f"[ERROR] PyInstaller build failed (exit code {result.returncode})")
         sys.exit(1)
 
     # 验证产物
     exe_path = TAURI_BIN_DIR / f"{TARGET_NAME}.exe"
     if exe_path.exists():
         size_mb = exe_path.stat().st_size / (1024 * 1024)
-        print(f"[build_backend] ✅ 打包成功: {exe_path} ({size_mb:.1f} MB)")
+        print(f"[build_backend] ✅ Build success: {exe_path} ({size_mb:.1f} MB)")
     else:
-        print(f"[ERROR] 产物文件未找到: {exe_path}")
+        print(f"[ERROR] Output binary not found: {exe_path}")
         sys.exit(1)
 
     # 清理临时目录
     if DIST_DIR.exists():
         shutil.rmtree(DIST_DIR, ignore_errors=True)
-        print("[build_backend] 临时目录已清理")
+        print("[build_backend] Cleaned up temporary directory")
 
 
 if __name__ == "__main__":
