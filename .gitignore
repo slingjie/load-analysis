@@ -31,3 +31,5 @@ __pycache__/
 outputs/
 负荷测试数据/
 test/
+src-tauri/binaries/
+src-tauri/target/
