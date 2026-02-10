@@ -24,6 +24,7 @@ import { StorageProfitPage } from './components/StorageProfitPage';
 import { StorageEconomicsPage } from './components/StorageEconomicsPage';
 import { PriceEditorPage } from './components/PriceEditorPage';
 import { ProjectSummaryPage } from './components/ProjectSummaryPage';
+import { ReportCenterPage } from './components/ReportCenterPage';
 import { ProjectDatasetsPage } from './components/ProjectDatasetsPage';
 import { FloatingSectionNav, type SectionItem } from './components/FloatingSectionNav';
 import UploadProgressRing from './components/UploadProgressRing';
@@ -64,7 +65,7 @@ const EditModeSelector: React.FC<{
 
 const App: React.FC = () => {
   // --- Page State ---
-  const [currentPage, setCurrentPage] = useState<'editor' | 'price' | 'analysis' | 'datasets' | 'matrix' | 'quality' | 'storage' | 'profit' | 'economics' | 'summary'>('editor');
+  const [currentPage, setCurrentPage] = useState<'editor' | 'price' | 'analysis' | 'datasets' | 'matrix' | 'quality' | 'storage' | 'profit' | 'economics' | 'summary' | 'report'>('editor');
   const [profitSelectedDate, setProfitSelectedDate] = useState<string | null>(null);
   const [lastStorageRun, setLastStorageRun] = useState<{
     payload: StorageParamsPayload;
@@ -140,6 +141,17 @@ const App: React.FC = () => {
     selectedDate: string | null;
   } | null>(null);
   const [restoreVersion, setRestoreVersion] = useState(0);
+
+  // 页面切换时回到顶部：避免从“长页面”切到“短页面”时出现滚动位置被 clamp，
+  // 产生“页面跳动/抖动”的观感（尤其在滚动条出现/消失的临界高度附近更明显）。
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    } catch {
+      // ignore
+    }
+  }, [currentPage]);
 
   // 解决“页面隐藏(display:none)期间初始化/更新图表导致尺寸为 0”的问题：
   // 切换页面或恢复快照后，主动触发一次 resize，让 ECharts/Chart 重新计算布局。
@@ -235,6 +247,13 @@ const App: React.FC = () => {
           { id: 'section-economics-chart', title: '现金流图表' },
           { id: 'section-economics-table', title: '年度明细' },
           { id: 'section-economics-conclusion', title: '投资评估' },
+        ];
+      case 'report':
+        return [
+          { id: 'section-report-intro', title: '说明' },
+          { id: 'section-report-source', title: '数据源' },
+          { id: 'section-report-params', title: '参数' },
+          { id: 'section-report-actions', title: '导出' },
         ];
       default:
         return [];
@@ -890,11 +909,18 @@ const App: React.FC = () => {
                 Economics
               </button>
               <button 
+                onClick={() => setCurrentPage('report')} 
+                className={`${navButtonBaseClasses} ${currentPage === 'report' ? navButtonActiveClasses : navButtonInactiveClasses}`}
+                aria-current={currentPage === 'report' ? 'page' : undefined}
+              >
+                报告中心(PDF)
+              </button>
+              <button 
                 onClick={() => setCurrentPage('summary')} 
                 className={`${navButtonBaseClasses} ${currentPage === 'summary' ? navButtonActiveClasses : navButtonInactiveClasses}`}
                 aria-current={currentPage === 'summary' ? 'page' : undefined}
               >
-                Project Summary
+                Markdown 报告（旧）
               </button>
               </div>
             </div>
@@ -1198,6 +1224,9 @@ const App: React.FC = () => {
           restoredProfitRun={restoreVersion > 0 ? lastProfitRun : null}
           restoredVersion={restoreVersion}
         />
+      )}
+      {currentPage === 'report' && (
+        <ReportCenterPage />
       )}
       {currentPage === 'summary' && (
         <ProjectSummaryPage

@@ -8,8 +8,9 @@ import type {
   StorageEconomicsInput,
   StorageEconomicsResult,
 } from './types';
+import { getApiBaseUrl } from './desktopBackend';
 
-export const BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || '').replace(/\/$/, '') || 'http://localhost:8000';
+export const BASE_URL = getApiBaseUrl();
 
 export interface StorageParamsPayload {
   storage: {
@@ -329,7 +330,7 @@ export const analyzeDataForCleaning = async (
   fileOrPoints: File | { timestamp: string; load_kwh: number }[],
 ): Promise<CleaningAnalysisResponse> => {
   const formData = new FormData();
-  
+
   if (fileOrPoints instanceof File) {
     formData.append('file', fileOrPoints);
   } else {
@@ -378,7 +379,7 @@ export const applyDataCleaning = async (
   config: CleaningConfigRequest,
 ): Promise<CleaningResultResponse> => {
   const formData = new FormData();
-  
+
   if (fileOrPoints instanceof File) {
     formData.append('file', fileOrPoints);
     formData.append('payload', JSON.stringify({ config }));
@@ -471,7 +472,7 @@ export const exportEconomicsCashflowReport = async (
     ...input,
     user_share_percent: userSharePercent,
   };
-  
+
   console.debug('[storageApi] POST storage/economics/export', url, requestBody);
 
   const response = await fetch(url, {
@@ -500,7 +501,7 @@ export const exportEconomicsCashflowReport = async (
     if (response.status === 422 && result?.detail) {
       if (Array.isArray(result.detail)) {
         // FastAPI验证错误格式
-        errorMsg = result.detail.map((err: any) => 
+        errorMsg = result.detail.map((err: any) =>
           `${err.loc?.join('.') || 'unknown'}: ${err.msg}`
         ).join('; ');
       } else {
@@ -509,13 +510,13 @@ export const exportEconomicsCashflowReport = async (
     } else {
       errorMsg = result?.detail || rawText || `${response.status} ${response.statusText}` || '报表生成失败';
     }
-    
-    console.error('[storageApi] exportEconomicsCashflowReport failed', { 
-      url, 
-      status: response.status, 
+
+    console.error('[storageApi] exportEconomicsCashflowReport failed', {
+      url,
+      status: response.status,
       error: errorMsg,
       requestBody,
-      responseDetail: result 
+      responseDetail: result
     });
     throw new Error(errorMsg);
   }

@@ -1,6 +1,7 @@
 import type { BackendLoadAnalysisResponse } from './types';
+import { getApiBaseUrl } from './desktopBackend';
 
-const BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL || '').replace(/\/$/, '');
+const BASE_URL = getApiBaseUrl();
 
 export const analyzeLoadFile = async (file: File): Promise<BackendLoadAnalysisResponse> => {
   const formData = new FormData();

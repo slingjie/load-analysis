@@ -685,6 +685,61 @@ export const deleteRun = async (runId: string): Promise<void> => {
   });
 };
 
+export const addRunArtifacts = async (
+  runId: string,
+  artifacts: Array<{ kind: string; filename: string; mime: string; blob: Blob }>,
+): Promise<void> => {
+  if (!runId) throw new Error('缺少 runId');
+  const list = Array.isArray(artifacts) ? artifacts : [];
+  if (list.length === 0) return;
+
+  const updatedAt = nowIso();
+
+  if (!(await canUseIdb())) {
+    await withLocalStorage(async (snap) => {
+      const r = snap.runs.find(x => x.id === runId);
+      if (!r) throw new Error('快照不存在');
+      r.updated_at = updatedAt;
+      for (const a of list) {
+        const base64 = await blobToBase64(a.blob);
+        snap.run_artifacts.push({
+          artifact_id: `${runId}:${a.kind}:${uuid()}`,
+          run_id: runId,
+          kind: a.kind,
+          filename: a.filename,
+          mime: a.mime,
+          base64,
+          created_at: updatedAt,
+        });
+      }
+    });
+    return;
+  }
+
+  const db = await getDb();
+  await idbTx(db, [STORE_RUNS, STORE_RUN_ARTIFACTS], 'readwrite', async (tx) => {
+    const runs = tx.objectStore(STORE_RUNS);
+    const artifactsStore = tx.objectStore(STORE_RUN_ARTIFACTS);
+    const r = await idbRequest(runs.get(runId));
+    if (!r) throw new Error('快照不存在');
+    runs.put({ ...(r as LocalRun), updated_at: updatedAt });
+
+    for (const a of list) {
+      const row: RunArtifactRow = {
+        artifact_id: `${runId}:${a.kind}:${uuid()}`,
+        run_id: runId,
+        kind: a.kind,
+        filename: a.filename,
+        mime: a.mime,
+        blob: a.blob,
+        created_at: updatedAt,
+      };
+      artifactsStore.add(row);
+    }
+    return await Promise.resolve();
+  });
+};
+
 export const saveRunSnapshot = async (input: {
   projectId: string;
   name: string;

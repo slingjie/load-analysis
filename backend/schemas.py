@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -543,3 +543,69 @@ class StorageEconomicsResult(BaseModel):
         description="静态经济性评估指标（第一步快速筛选，可选）",
     )
 
+
+# ==================== 项目经济性评估报告（图文 PDF v3.0） ====================
+
+
+class ReportMetaV3(BaseModel):
+    report_version: Literal["v3.0"] = Field(default="v3.0", description="报告版本号")
+    generated_at: str = Field(description="生成时间 ISO8601")
+    project_name: str = Field(description="项目名称")
+    owner_name: Optional[str] = Field(default=None, description="业主方名称（可选）")
+    project_location: Optional[str] = Field(default=None, description="项目地点（可选）")
+    period_start: str = Field(description="评估周期起始日 YYYY-MM-DD")
+    period_end: str = Field(description="评估周期结束日 YYYY-MM-DD")
+    author_org: Optional[str] = Field(default=None, description="编制单位/作者（可选）")
+    subtitle: Optional[str] = Field(default=None, description="封面副标题（可选）")
+    logo_data_url: Optional[str] = Field(default=None, description="Logo 图片 DataURL（可选）")
+    total_investment_wanyuan: float = Field(description="项目总投资（万元）")
+
+
+class ReportCompletenessV3(BaseModel):
+    has_load: bool = Field(description="是否具备负荷数据")
+    has_tou: bool = Field(description="是否具备 TOU 与策略配置")
+    has_cycles: bool = Field(description="是否具备 cycles 测算结果")
+    has_economics: bool = Field(description="是否具备 economics 测算结果")
+    has_profit_curves_for_best_profit_day: bool = Field(description="是否具备收益最高日曲线")
+    has_profit_curves_for_max_load_day: bool = Field(description="是否具备最大负荷日曲线")
+    missing_items: List[str] = Field(default_factory=list, description="缺失项清单（用于导出提示/报告占位）")
+
+
+class ReportChartsV3(BaseModel):
+    price_24h_png: Optional[str] = Field(default=None, description="24h 分时电价图（PNG DataURL）")
+    strategy_24h_png: Optional[str] = Field(default=None, description="24h 运行策略图（PNG DataURL）")
+    load_typical_png: Optional[str] = Field(default=None, description="负荷典型曲线图（PNG DataURL）")
+    load_monthly_distribution_png: Optional[str] = Field(default=None, description="月度分布图（PNG DataURL）")
+    load_price_overlay_png: Optional[str] = Field(default=None, description="负荷-电价叠加图（PNG DataURL）")
+    capacity_compare_png: Optional[str] = Field(default=None, description="容量对比趋势图（PNG DataURL）")
+    cashflow_png: Optional[str] = Field(default=None, description="现金流图（PNG DataURL）")
+    best_profit_day_overlay_png: Optional[str] = Field(default=None, description="收益最高日叠加图（PNG DataURL）")
+    max_load_day_overlay_png: Optional[str] = Field(default=None, description="最大负荷日叠加图（PNG DataURL）")
+
+
+class ReportAiPolishV3(BaseModel):
+    enabled: bool = Field(default=False, description="是否启用 AI 文案润色")
+    provider: Optional[str] = Field(default=None, description="模型供应商标识（可选）")
+    notes: str = Field(default="仅润色，不改数值", description="约束说明")
+
+
+class ReportNarrativeV3(BaseModel):
+    summary: str = Field(default="本报告由系统自动生成。", description="摘要段落")
+    conclusion: str = Field(default="结论待补充。", description="综合结论段落")
+    risks: List[str] = Field(default_factory=list, description="风险提示条目")
+    suggestions: List[str] = Field(default_factory=list, description="建议与下一步条目")
+
+
+class ReportDataV3(BaseModel):
+    meta: ReportMetaV3
+    completeness: ReportCompletenessV3
+    load: Dict[str, Any] = Field(default_factory=dict, description="负荷相关数据（透传/兼容）")
+    tou: Dict[str, Any] = Field(default_factory=dict, description="TOU 与策略配置（透传/兼容）")
+    storage: Dict[str, Any] = Field(default_factory=dict, description="储能测算数据（透传/兼容）")
+    narrative: ReportNarrativeV3 = Field(default_factory=ReportNarrativeV3, description="报告文本段落（可选由 AI 润色）")
+    charts: ReportChartsV3 = Field(default_factory=ReportChartsV3, description="图表图片（DataURL）")
+    ai_polish: ReportAiPolishV3 = Field(default_factory=ReportAiPolishV3, description="AI 文案润色配置")
+
+
+class ReportPdfRequest(BaseModel):
+    report_data: ReportDataV3 = Field(description="报告数据（前端组装，后端模板渲染）")

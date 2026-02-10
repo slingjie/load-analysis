@@ -22,6 +22,7 @@ TIMESTAMP_ALIASES = {
 DATE_ALIASES = {
     "date",
     "日期",
+    "数据日期",
     "记录日期",
 }
 
@@ -39,6 +40,9 @@ LOAD_ALIASES = {
     "负荷(kw)",    # 常见英文括号写法
     "负荷(kW)",    # 大写W
     "负荷（kW）",   # 中文括号写法
+    "功率(kw)",
+    "功率(kW)",
+    "功率(KW)",
     "功率",
 }
 logger = logging.getLogger("load-analysis")
@@ -55,8 +59,9 @@ def _normalize_columns(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _locate_column(candidates: set[str], columns: list[str]) -> Optional[str]:
+    candidates_norm = {str(c).strip().lower() for c in candidates}
     for name in columns:
-        if name in candidates:
+        if name in candidates_norm:
             return name
     return None
 

@@ -5,9 +5,11 @@ import logging
 import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
+from urllib.parse import quote
 
 import pandas as pd
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -41,12 +43,16 @@ from .schemas import (
     StorageEconomicsResult,
     StaticEconomicsMetrics,
     YearlyCashflowItem,
+    ReportPdfRequest,
 )
 from .services import loader, quality
 from .services import cycles as cycles_svc
 from .services import cleaning as cleaning_svc
 from .services import economics as economics_svc
 from .services import local_sync as local_sync_svc
+from .services import report_pdf as report_pdf_svc
+from .services import report_ai_polish as report_ai_polish_svc
+from .services.app_paths import OUTPUTS_DIR, ensure_dirs as _ensure_data_dirs
 
 
 logger = logging.getLogger("load-analysis")
@@ -69,8 +75,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 启动时确保可写数据目录存在（桌面版落到 AppData）
+_ensure_data_dirs()
+
 # 挂载 outputs 目录用于下载导出报表（CSV/ZIP 等）
-app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
+app.mount("/outputs", StaticFiles(directory=str(OUTPUTS_DIR)), name="outputs")
 
 
 @app.post("/api/load/analyze", response_model=LoadAnalysisResponse)
@@ -755,7 +764,7 @@ async def compute_storage_cycles(
         from pathlib import Path as _Path  # noqa: WPS433
 
         ts_dir = _dt.now().strftime("%Y%m%d_%H%M%S")
-        out_dir = _Path("outputs") / ts_dir
+        out_dir = OUTPUTS_DIR / ts_dir
         try:
             # 生成逐 15 分钟功率 / 负荷序列，供导出调试
             try:
@@ -801,7 +810,7 @@ async def compute_storage_cycles(
                 )
                 # 转换为可通过 /outputs 静态路径访问的相对 URL
                 try:
-                    rel = xlsx_path.relative_to(_Path("outputs"))
+                    rel = xlsx_path.relative_to(OUTPUTS_DIR)
                     excel_rel = f"/outputs/{rel.as_posix()}"
                 except Exception:
                     excel_rel = f"/outputs/{xlsx_path.name}"
@@ -823,7 +832,7 @@ async def compute_storage_cycles(
                     energy_formula=energy_formula,
                 )
                 try:
-                    rel = xlsx_path.relative_to(_Path("outputs"))
+                    rel = xlsx_path.relative_to(OUTPUTS_DIR)
                     excel_rel = f"/outputs/{rel.as_posix()}"
                 except Exception:
                     excel_rel = f"/outputs/{xlsx_path.name}"
@@ -1353,3 +1362,86 @@ async def export_economics_cashflow_report(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"报表生成失败: {str(exc)}",
         ) from exc
+
+
+# =========================
+# PDF / HTML 报告路由（桌面版禁用）
+# =========================
+
+_DESKTOP_MODE = os.environ.get("DESKTOP_MODE", "").strip() == "1"
+
+if not _DESKTOP_MODE:
+    @app.post("/api/report/html", response_class=HTMLResponse)
+    async def debug_render_report_html(request: ReportPdfRequest) -> HTMLResponse:
+        """
+        返回报告 HTML（用于调试排版/字体/分页）。
+        """
+        report = request.report_data
+        if not report.meta.project_name.strip():
+            raise HTTPException(status_code=422, detail="必填项缺失：project_name")
+        if not report.meta.period_start.strip() or not report.meta.period_end.strip():
+            raise HTTPException(status_code=422, detail="必填项缺失：period_start/period_end")
+        if report.meta.total_investment_wanyuan is None:
+            raise HTTPException(status_code=422, detail="必填项缺失：total_investment_wanyuan")
+
+        if getattr(report.ai_polish, "enabled", False):
+            try:
+                report.narrative = await report_ai_polish_svc.polish_report_narrative(report)
+                report.ai_polish.provider = report.ai_polish.provider or "deepseek"
+            except Exception as exc:
+                logger.warning("report ai polish failed, fallback to template: %s", str(exc))
+
+        html_text = report_pdf_svc.build_report_html(report)
+        return HTMLResponse(content=html_text)
+
+
+    @app.post("/api/report/pdf")
+    async def render_report_pdf(request: ReportPdfRequest) -> Response:
+        """
+        生成并下载项目经济性评估报告 PDF（图文版）。
+        """
+        report = request.report_data
+        if not report.meta.project_name.strip():
+            raise HTTPException(status_code=422, detail="必填项缺失：project_name")
+        if not report.meta.period_start.strip() or not report.meta.period_end.strip():
+            raise HTTPException(status_code=422, detail="必填项缺失：period_start/period_end")
+        if report.meta.total_investment_wanyuan is None:
+            raise HTTPException(status_code=422, detail="必填项缺失：total_investment_wanyuan")
+
+        try:
+            if getattr(report.ai_polish, "enabled", False):
+                try:
+                    report.narrative = await report_ai_polish_svc.polish_report_narrative(report)
+                    report.ai_polish.provider = report.ai_polish.provider or "deepseek"
+                except Exception as exc:
+                    logger.warning("report ai polish failed, fallback to template: %s", str(exc))
+
+            html_text = report_pdf_svc.build_report_html(report)
+            header_title = f"{(report.meta.owner_name or '').strip()}-储能项目经济性评估报告" if report.meta.owner_name else "储能项目经济性评估报告"
+            pdf_bytes = await report_pdf_svc.render_pdf_from_html(
+                html_text=html_text,
+                header_title=header_title,
+                generated_at=report.meta.generated_at,
+            )
+            filename = report_pdf_svc.suggest_pdf_filename(report)
+            filename_ascii = report_pdf_svc.suggest_pdf_filename_ascii(report)
+            content_disposition = f"attachment; filename=\"{filename_ascii}\"; filename*=UTF-8''{quote(filename)}"
+            return Response(
+                content=pdf_bytes,
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": content_disposition,
+                    "Cache-Control": "no-store",
+                },
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("report pdf render failed")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"PDF 渲染失败: {str(exc)}",
+            ) from exc
+else:
+    logger.info("DESKTOP_MODE=1: PDF/HTML report routes disabled")
+

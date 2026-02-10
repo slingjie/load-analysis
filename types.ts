@@ -399,3 +399,67 @@ export interface StorageEconomicsResult {
   yearly_cashflows: YearlyCashflowItem[];     // 年度现金流序列
   static_metrics?: StaticEconomicsMetrics | null; // 静态经济性评估指标（第一步筛选）
 }
+
+// ==================== 项目经济性评估报告（图文 PDF v3.0） ====================
+
+export type ReportChartPng = string | null; // data:image/png;base64,...
+
+export interface ReportMetaV3 {
+  report_version: 'v3.0';
+  generated_at: string; // ISO8601
+  project_name: string;
+  owner_name: string | null;
+  project_location: string | null;
+  period_start: string; // YYYY-MM-DD
+  period_end: string; // YYYY-MM-DD
+  author_org: string | null;
+  subtitle: string | null;
+  logo_data_url: string | null; // data:image/png;base64,...
+  total_investment_wanyuan: number;
+}
+
+export interface ReportCompletenessV3 {
+  has_load: boolean;
+  has_tou: boolean;
+  has_cycles: boolean;
+  has_economics: boolean;
+  has_profit_curves_for_best_profit_day: boolean;
+  has_profit_curves_for_max_load_day: boolean;
+  missing_items: string[];
+}
+
+export interface ReportChartsV3 {
+  price_24h_png: ReportChartPng;
+  strategy_24h_png: ReportChartPng;
+  load_typical_png: ReportChartPng;
+  load_monthly_distribution_png: ReportChartPng;
+  load_price_overlay_png: ReportChartPng;
+  capacity_compare_png: ReportChartPng;
+  cashflow_png: ReportChartPng;
+  best_profit_day_overlay_png: ReportChartPng;
+  max_load_day_overlay_png: ReportChartPng;
+}
+
+export interface ReportAiPolishV3 {
+  enabled: boolean;
+  provider: string | null;
+  notes: string;
+}
+
+export interface ReportNarrativeV3 {
+  summary: string;
+  conclusion: string;
+  risks: string[];
+  suggestions: string[];
+}
+
+export interface ReportDataV3 {
+  meta: ReportMetaV3;
+  completeness: ReportCompletenessV3;
+  load: any;
+  tou: any;
+  storage: any;
+  narrative: ReportNarrativeV3;
+  charts: ReportChartsV3;
+  ai_polish: ReportAiPolishV3;
+}

@@ -6,9 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-
-STORE_DIR = Path("local_sync_store")
-SNAPSHOT_PATH = STORE_DIR / "snapshot.json"
+from .app_paths import STORE_DIR, SNAPSHOT_PATH
 
 
 def _ensure_store_dir() -> None:

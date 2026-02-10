@@ -467,7 +467,7 @@ def export_economics_cashflow_report(
     result: EconomicsResult,
     user_share_percent: float = 0.0,
     yearly_discharge_energy_kwh: Optional[List[float]] = None,
-    output_dir: str = "outputs",
+    output_dir: str = None,
     filename_prefix: str = "经济性现金流报表"
 ) -> str:
     """
@@ -477,12 +477,15 @@ def export_economics_cashflow_report(
         result: 经济性测算结果对象
         user_share_percent: 用户收益分成比例（0-100）
         yearly_discharge_energy_kwh: 各年度储能放电量（kWh）列表，长度应与项目年限一致
-        output_dir: 输出目录
+        output_dir: 输出目录（默认使用 app_paths.OUTPUTS_DIR）
         filename_prefix: 文件名前缀
     
     Returns:
         生成的ZIP文件路径（相对于outputs目录）
     """
+    from .app_paths import OUTPUTS_DIR
+    if output_dir is None:
+        output_dir = str(OUTPUTS_DIR)
     os.makedirs(output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     zip_filename = f"{filename_prefix}_{timestamp}.zip"
