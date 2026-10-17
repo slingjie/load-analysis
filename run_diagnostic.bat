@@ -21,7 +21,7 @@ if %errorlevel% neq 0 (
     
     echo.
     echo 正在启动后端服务...
-    start "后端服务" powershell -NoExit -Command "$env:DEEPSEEK_API_KEY='sk-3008dc675fad4414abee5ea2b75ed54f'; uvicorn backend.app:app --reload"
+    start "后端服务" powershell -NoExit -Command "$env:DEEPSEEK_API_KEY='<YOUR_DEEPSEEK_API_KEY>'; uvicorn backend.app:app --reload"
     
     echo 等待后端服务启动（15秒）...
     timeout /t 15 /nobreak >nul

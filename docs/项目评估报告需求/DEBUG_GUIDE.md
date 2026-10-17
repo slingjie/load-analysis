@@ -29,7 +29,7 @@
 
 **选项 B - 手动启动**
 ```powershell
-$env:DEEPSEEK_API_KEY='sk-3008dc675fad4414abee5ea2b75ed54f'
+$env:DEEPSEEK_API_KEY='<YOUR_DEEPSEEK_API_KEY>'
 cd D:\Desktop\ai\1028负荷展示和tou配置
 uvicorn backend.app:app --reload
 ```

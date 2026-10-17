@@ -27,7 +27,7 @@ def check_backend():
         print("\n请在另一个终端运行：")
         print("  .\\start_backend_with_env.ps1")
         print("或:")
-        print("  $env:DEEPSEEK_API_KEY='sk-3008dc675fad4414abee5ea2b75ed54f'")
+        print("  $env:DEEPSEEK_API_KEY='<YOUR_DEEPSEEK_API_KEY>'")
         print("  uvicorn backend.app:app --reload")
         return False
     except Exception as e:
