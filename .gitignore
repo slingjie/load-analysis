@@ -13,7 +13,6 @@ dist-ssr
 *.local
 
 # Python virtual environment
--/
 venv/
 .venv/
 __pycache__/
@@ -33,3 +32,11 @@ outputs/
 test/
 src-tauri/binaries/
 src-tauri/target/
+
+# Local data, tool caches, accidental venvs
+→/
+local_sync_store/
+.playwright-mcp/
+.codex/
+.env
+.env.*
